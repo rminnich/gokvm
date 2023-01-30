@@ -12,6 +12,7 @@ import (
 	"github.com/bobuhiro11/gokvm/kvm"
 	"github.com/bobuhiro11/gokvm/machine"
 	"github.com/bobuhiro11/gokvm/term"
+	"github.com/bobuhiro11/gokvm/virtio"
 )
 
 func main() {
@@ -40,6 +41,10 @@ func main() {
 
 	if err := m.LoadLinux(kern, initrd, c.Params); err != nil {
 		log.Fatalf("%v", err)
+	}
+
+	if v, err := virtio.NewVSock(c.Vsock, c.Routes); err != nil {
+		log.Printf("newvsock: %v, %v", v, err)
 	}
 
 	var wg sync.WaitGroup

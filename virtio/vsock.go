@@ -158,7 +158,7 @@ func (i ioval) ioctl(fd, arg uintptr) (uintptr, error) {
 	return res, nil
 }
 
-func NewVSock(dev string, route *flag.VSockRoute) (*VSock, error) {
+func NewVSock(dev string, routes flag.VSockRoutes) (*VSock, error) {
 	// 	36865 openat(AT_FDCWD, "/dev/vhost-vsock", O_RDWR) = 37
 	// 	36865 mmap(NULL, 135168, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f2d4419d000
 	// 	36865 ioctl(37, VHOST_SET_OWNER, 0)     = 0
