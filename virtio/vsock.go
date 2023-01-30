@@ -180,17 +180,23 @@ func NewVSock(dev string, routes flag.VSockRoutes) (*VSock, error) {
 	}
 
 	mmapSize := 128 * 1024
-	vr, err := syscall.Mmap(-1, 0, int(mmapSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	vr, err := syscall.Mmap(-1, 0, int(mmapSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED | syscall.MAP_ANONYMOUS)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("vr %#x", vr)
+	if false { log.Printf("%#x", vr) }
 
 	fd := vs.Fd()
 
 	if _, err := vhostSetOwner.ioctl(fd, 0); err != nil {
 		return nil, err
 	}
+
+	var features uint64
+	if _, err := vhostGetFeatures.ioctl(fd, uintptr(unsafe.Pointer(&features)));  err != nil {
+		return nil, fmt.Errorf("GetFeatures: %w", err)
+	}
+	log.Printf("features %#x", features)
 
 	return nil, errx
 }

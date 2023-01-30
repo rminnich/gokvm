@@ -44,7 +44,7 @@ func main() {
 	}
 
 	if v, err := virtio.NewVSock(c.Vsock, c.Routes); err != nil {
-		log.Printf("newvsock: %v, %v", v, err)
+		log.Fatalf("newvsock: %v, %v", v, err)
 	}
 
 	var wg sync.WaitGroup
