@@ -26,8 +26,8 @@ type vhostVringState struct {
 	num   uint
 }
 type vhostVringFile struct {
-	index uint
-	fd    int
+	//	index uint
+	fd int
 }
 
 type vhostVringAddr struct {
@@ -58,7 +58,7 @@ var (
 	vhostGetFeatures   = IIOR(0x00, unsafe.Sizeof(u64))
 	vhostSetFeatures   = IIOW(0x00, unsafe.Sizeof(u64))
 	vhostSetOwner      = IIO(0x01)
-	vhostRESETOwner   = IIO(002)
+	vhostRESETOwner    = IIO(002)
 	vhostSetMemTable   = IIOW(0x03, unsafe.Sizeof(vhostMemory{}))
 	vhostSetLogBase    = IIOW(0x04, unsafe.Sizeof(u64))
 	vhostSetLogFD      = IIOW(0x07, unsafe.Sizeof(i))
@@ -67,7 +67,7 @@ var (
 	vhostSetVringBase  = IIOW(0x12, unsafe.Sizeof(vhostVringState{}))
 	vhostGetVringBase  = IIOWR(0x12, unsafe.Sizeof(vhostVringState{}))
 	vhostSetVringKick  = IIOW(0x20, unsafe.Sizeof(vhostVringFile{}))
-	vhostSetVringCall  = IIOW(0x21, unsafe.Sizeof(vhostVringFile{}))
+	vhostSetVringCall  = IIOW(0x21, 0x08) // unsafe.Sizeof(vhostVringFile{})) //0x4008af21
 	vhostSetVringErr   = IIOW(0x22, unsafe.Sizeof(vhostVringFile{}))
 	vhostNETSetBackend = IIOW(0x30, unsafe.Sizeof(vhostVringFile{}))
 	//vhostSCSISetEndpoint   = IIOW(0x40, unsafe.Sizeof(vhostSCSITarget{}))
@@ -206,7 +206,20 @@ func NewVSock(dev string, routes flag.VSockRoutes) (*VSock, error) {
 	// EFD_NONBLOCK                                = 0x800
 	r1, r2, err := syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
 	log.Printf("eventfd1; %v, %v, %v", r1, r2, err)
-	if err.(syscall.Errno) != 0 { 
+	if err.(syscall.Errno) != 0 {
+		return nil, err
+	}
+
+	// not sure what's up here.
+	// 1874054 ioctl(12, _IOC(_IOC_WRITE, 0xaf, 0x21, 0x10), 0xc000113d98) = -1 ENOTTY (Inappropriate ioctl for device)
+	// so strace thinks this ioctl is wrong.
+	if _, err := vhostSetVringCall.ioctl(fd, uintptr(unsafe.Pointer(&vhostVringFile{fd: int(r1)}))); err != nil {
+		return nil, err
+	}
+
+	r1, r2, err = syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
+	log.Printf("eventfd1; %v, %v, %v", r1, r2, err)
+	if err.(syscall.Errno) != 0 {
 		return nil, err
 	}
 
