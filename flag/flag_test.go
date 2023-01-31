@@ -27,20 +27,31 @@ func TestParseRoutes(t *testing.T) {
 		{name: "2routesbad2ndrouteno:", val: "17010=tcp:17010,18010=unixport", ret: nil, err: strconv.ErrSyntax},
 		{name: "2routesbadvsockportin2nd", val: "17010=tcp:17010,1x010=unixport", ret: nil, err: strconv.ErrSyntax},
 
-		{name: "uds", val: "17010=unix:port", ret: flag.VSockRoutes{&flag.VSockRoute{VMPort: 17010, Net: "unix", Addr: "port"}}, err: nil},
-		{name: "tcp", val: "17010=tcp:17010", ret: flag.VSockRoutes{&flag.VSockRoute{VMPort: 17010, Net: "tcp", Addr: "17010"}}, err: nil},
-		{name: "2ports", val: "17010=tcp:17010,18010=unix:port",
+		// golangci-lint antipattern
+		{
+			name: "uds", val: "17010=unix:port",
+			ret: flag.VSockRoutes{&flag.VSockRoute{VMPort: 17010, Net: "unix", Addr: "port"}}, err: nil,
+		},
+		{
+			name: "tcp", val: "17010=tcp:17010",
+			ret: flag.VSockRoutes{&flag.VSockRoute{VMPort: 17010, Net: "tcp", Addr: "17010"}}, err: nil,
+		},
+		{
+			name: "2ports", val: "17010=tcp:17010,18010=unix:port",
 			ret: flag.VSockRoutes{
 				&flag.VSockRoute{VMPort: 17010, Net: "tcp", Addr: "17010"},
 				&flag.VSockRoute{VMPort: 18010, Net: "unix", Addr: "port"},
 			},
-			err: nil},
+			err: nil,
+		},
 	} {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			r, err := flag.ParseRoutes(strings.Split(tt.val, ",")...)
 			if !errors.Is(err, tt.err) || !reflect.DeepEqual(r, tt.ret) {
-				t.Errorf("ParseRoutes(%s): ! errors.Is(%v, %v) || ! reflect.DeepEqual(%v,%v)", tt.val, err, tt.err, r.String(), tt.ret.String())
+				t.Errorf("ParseRoutes(%s): ! errors.Is(%v, %v) || ! reflect.DeepEqual(%v,%v)",
+					tt.val, err, tt.err, r.String(), tt.ret.String())
 			}
 		})
 	}

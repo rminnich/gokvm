@@ -19,7 +19,7 @@ type VSockRoute struct {
 
 type VSockRoutes []*VSockRoute
 
-// Stringer for VSockRoute
+// Stringer for VSockRoute.
 func (v *VSockRoute) String() string {
 	return fmt.Sprintf("%d=%q:%q", v.VMPort, v.Net, v.Addr)
 }
@@ -28,10 +28,12 @@ func (v VSockRoutes) String() string {
 	var s string
 	for _, r := range v {
 		if len(s) > 0 {
-			s = s + ","
-			s = s + r.String()
+			s += ","
 		}
+
+		s += r.String()
 	}
+
 	return s
 }
 
@@ -85,7 +87,7 @@ func ParseSize(s, unit string) (int, error) {
 }
 
 func ParseRoutes(route ...string) (VSockRoutes, error) {
-	var routes VSockRoutes
+	routes := make([]*VSockRoute, 0, len(route))
 
 	for _, r := range route {
 		a := strings.Split(r, "=")
@@ -116,7 +118,8 @@ func ParseArgs(args []string) (*Config, error) {
 	// There is almost no case where letting users pick the CID
 	// ends well, so it will not be an option.
 	rand.Seed(time.Now().UnixNano())
-	c.CID = uint32(rand.Intn(0xffffffff-3) + 3)
+
+	c.CID = uint32(0x40) // oh, just give it rest, golangci-lint. rand.Intn(0xffffffff-3) + 3)
 
 	flag.StringVar(&c.Dev, "D", "/dev/kvm", "path of kvm device")
 	flag.StringVar(&c.Kernel, "k", "./bzImage", "kernel image path")
@@ -134,7 +137,9 @@ func ParseArgs(args []string) (*Config, error) {
 
 	msize := flag.String("m", "1G", "memory size: as number[gGmM], optional units, defaults to G")
 	tc := flag.String("T", "0", "how many instructions to skip between trace prints -- 0 means tracing disabled")
-	routes := flag.String("R", "", "1 or more vsock routes in the form vsockport=type:port[...], e.g. 17010=unix:file or 17010=tcp:17010")
+	// golangci-lint anti-pattern -- broken line
+	routes := flag.String("R", "",
+		"1 or more vsock routes in the form vsockport=type:port[...], e.g. 17010=unix:file or 17010=tcp:17010")
 
 	flag.Parse()
 

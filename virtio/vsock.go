@@ -1,6 +1,7 @@
 package virtio
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -12,78 +13,79 @@ import (
 )
 
 const (
-	vhostVringflog        = 0
-	vhostPageSize         = 0x1000
-	vhostVirtio           = 0xAF
-	vhostFLogAll          = 26
-	vhostNetFVirtioNetHdr = 27
-	vhostSCSIABIVersion   = 1
+	// currently unused, left here for reference.
+	// vhostVringflog        = 0.
+	vhostPageSize = 0x1000
+	// vhostFLogAll          = 26
+	// vhostNetFVirtioNetHdr = 27
+	// vhostSCSIABIVersion   = 1.
 )
 
 // NOTE: these were auto-generated but whatever.
-type vhostVringState struct {
-	index uint
-	num   uint
-}
+// until we use them, we can leave them commented out.
+// type vhostVringState struct {
+// 	index uint
+// 	num   uint
+// }
+
 type vhostVringFile struct {
 	index int32
-	fd int32
+	fd    int32
 }
 
-type vhostVringAddr struct {
-	index         uint
-	flags         uint
-	descUserAddr  uint64
-	usedUserAddr  uint64
-	availUserAddr uint64
-	logGuestAddr  uint64
-}
+// type vhostVringAddr struct {
+// 	index         uint
+// 	flags         uint
+// 	descUserAddr  uint64
+// 	usedUserAddr  uint64
+// 	availUserAddr uint64
+// 	logGuestAddr  uint64
+// }
 
-type vhostMemoryRegion struct {
-	guestPhysAddr uint64
-	memorySize    uint64
-	userspaceAddr uint64
-	_             uint64
-}
+// type vhostMemoryRegion struct {
+// 	guestPhysAddr uint64
+// 	memorySize    uint64
+// 	userspaceAddr uint64
+// 	_             uint64
+// }
 
-type vhostMemory struct {
-	nregions uint32
-	padding  uint32
-	regions  []vhostMemoryRegion
-}
+// type vhostMemory struct {
+// 	nregions uint32
+// 	padding  uint32
+// 	regions  []vhostMemoryRegion
+// }
 
+// These probably should be created as consts via go generate.
 var (
-	u64                uint64
-	i                  int
-	vhostGetFeatures   = IIOR(0x00, unsafe.Sizeof(u64))
-	vhostSetFeatures   = IIOW(0x00, unsafe.Sizeof(u64))
-	vhostSetOwner      = IIO(0x01)
-	vhostRESETOwner    = IIO(002)
-	vhostSetMemTable   = IIOW(0x03, unsafe.Sizeof(vhostMemory{}))
-	vhostSetLogBase    = IIOW(0x04, unsafe.Sizeof(u64))
-	vhostSetLogFD      = IIOW(0x07, unsafe.Sizeof(i))
-	vhostSetVringNum   = IIOW(0x10, unsafe.Sizeof(vhostVringState{}))
-	vhostSetVringAddr  = IIOW(0x11, unsafe.Sizeof(vhostVringAddr{}))
-	vhostSetVringBase  = IIOW(0x12, unsafe.Sizeof(vhostVringState{}))
-	vhostGetVringBase  = IIOWR(0x12, unsafe.Sizeof(vhostVringState{}))
-	vhostSetVringKick  = IIOW(0x20, unsafe.Sizeof(vhostVringFile{}))
-	vhostSetVringCall  = IIOW(0x21, 0x08) // unsafe.Sizeof(vhostVringFile{})) //0x4008af21
-	vhostSetVringErr   = IIOW(0x22, unsafe.Sizeof(vhostVringFile{}))
-	vhostNETSetBackend = IIOW(0x30, unsafe.Sizeof(vhostVringFile{}))
-	//vhostSCSISetEndpoint   = IIOW(0x40, unsafe.Sizeof(vhostSCSITarget{}))
-	//vhostSCSIClearEndpoint = IIOW(0x41, unsafe.Sizeof(vhostSCSITarget{}))
 
-	vhostSCSIGetABIVersion    = IIOW(0x42, unsafe.Sizeof(i))
-	u                         uint32
-	vhostSCSISetEventsxMissed = IIOW(0x43, unsafe.Sizeof(u))
-	vhostSCSIGetEventsMissed  = IIOW(0x44, unsafe.Sizeof(u))
+// _i                int.
+// golangci-lint is broken, does not see that _u64 is used in the
+// next line.
+// _vhostSetFeatures = IIOW(0x00, unsafe.Sizeof(_u64)).
+// _vhostRESETOwner    = IIO(002)
+// _vhostSetMemTable   = IIOW(0x03, unsafe.Sizeof(vhostMemory{}))
+// _vhostSetLogBase    = IIOW(0x04, unsafe.Sizeof(_u64))
+// _vhostSetLogFD = IIOW(0x07, unsafe.Sizeof(_i))
+// _vhostSetVringNum   = IIOW(0x10, unsafe.Sizeof(vhostVringState{}))
+// _vhostSetVringAddr  = IIOW(0x11, unsafe.Sizeof(vhostVringAddr{}))
+// _vhostSetVringBase  = IIOW(0x12, unsafe.Sizeof(vhostVringState{}))
+// _vhostGetVringBase  = IIOWR(0x12, unsafe.Sizeof(vhostVringState{}))
+// _vhostSetVringKick  = IIOW(0x20, unsafe.Sizeof(vhostVringFile{})).
+// _vhostSetVringErr   = IIOW(0x22, unsafe.Sizeof(vhostVringFile{}))
+// _vhostNETSetBackend = IIOW(0x30, unsafe.Sizeof(vhostVringFile{}))
+// vhostSCSISetEndpoint   = IIOW(0x40, unsafe.Sizeof(vhostSCSITarget{}))
+// vhostSCSIClearEndpoint = IIOW(0x41, unsafe.Sizeof(vhostSCSITarget{})).
 
-	vhostVsockSetGuestCID = IIOW(0x60, unsafe.Sizeof(u64))
-	// int in c is 32 bits, not sure what it is in go really.
-	vhostVsockSetRunning = IIOW(0x61, unsafe.Sizeof(u))
+// _vhostSCSIGetABIVersion    = IIOW(0x42, unsafe.Sizeof(_i))
+// _u uint32
+// _vhostSCSISetEventsxMissed = IIOW(0x43, unsafe.Sizeof(_u))
+// _vhostSCSIGetEventsMissed  = IIOW(0x44, unsafe.Sizeof(_u))
+
+//  int in c is 32 bits, not sure what it is in go really.
+// _vhostVsockSetRunning = IIOW(0x61, unsafe.Sizeof(_u))
 )
 
-// VSock is a single instance of a vsock connection
+// VSock is a single instance of a vsock connection.
 type VSock struct {
 	Local net.Addr
 }
@@ -97,8 +99,6 @@ func (v *VSock) Rx() error {
 func (v *VSock) Tx() error {
 	return errx
 }
-
-var cid int
 
 const (
 	nrbits   = 8
@@ -153,16 +153,24 @@ func IIOC(dir, nr, size uintptr) ioval {
 		((nr & nrmask) << nrshift) | ((size & sizemask) << sizeshift))
 }
 
-func (i ioval) ioctl(fd, arg uintptr) (uintptr, error) {
-	res, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(i), arg)
+func (i ioval) ioctl(fd, arg uintptr) error {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(i), arg)
 	if errno != 0 {
-		return res, errno
+		return errno
 	}
 
-	return res, nil
+	return nil
 }
 
 func NewVSock(dev string, cid uint32, routes flag.VSockRoutes) (*VSock, error) {
+	var (
+		u64                   uint64
+		vhostGetFeatures      = IIOR(0x00, unsafe.Sizeof(u64))
+		vhostSetOwner         = IIO(0x01)
+		vhostSetVringCall     = IIOW(0x21, 0x08) //  unsafe.Sizeof(vhostVringFile{})) // 0x4008af21
+		vhostVsockSetGuestCID = IIOW(0x60, unsafe.Sizeof(u64))
+	)
+
 	// 	36865 openat(AT_FDCWD, "/dev/vhost-vsock", O_RDWR) = 37
 	// 	36865 mmap(NULL, 135168, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f2d4419d000
 	// 	36865 ioctl(37, VHOST_SET_OWNER, 0)     = 0
@@ -183,25 +191,24 @@ func NewVSock(dev string, cid uint32, routes flag.VSockRoutes) (*VSock, error) {
 		return nil, err
 	}
 
-	mmapSize := 128 * 1024
-	vr, err := syscall.Mmap(-1, 0, int(mmapSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_ANONYMOUS)
+	mmapSize := 16 * vhostPageSize
+
+	_, err = syscall.Mmap(-1, 0, mmapSize,
+		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_ANONYMOUS)
 	if err != nil {
 		return nil, err
 	}
-	if false {
-		log.Printf("%#x", vr)
-	}
 
 	fd := vs.Fd()
-
-	if _, err := vhostSetOwner.ioctl(fd, 0); err != nil {
+	if err := vhostSetOwner.ioctl(fd, 0); err != nil {
 		return nil, err
 	}
 
 	var features uint64
-	if _, err := vhostGetFeatures.ioctl(fd, uintptr(unsafe.Pointer(&features))); err != nil {
+	if err := vhostGetFeatures.ioctl(fd, uintptr(unsafe.Pointer(&features))); err != nil {
 		return nil, fmt.Errorf("GetFeatures: %w", err)
 	}
+
 	log.Printf("features %#x", features)
 
 	// Must have en eventfd2
@@ -210,33 +217,39 @@ func NewVSock(dev string, cid uint32, routes flag.VSockRoutes) (*VSock, error) {
 	// EFD_NONBLOCK                                = 0x800
 	r1, r2, err := syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
 	log.Printf("info:eventfd1; %v, %v, %v", r1, r2, err)
-	if err.(syscall.Errno) != 0 {
-		return nil, fmt.Errorf("Setting up first eventfd:%w", err)
+
+	var errno syscall.Errno
+	if ok := errors.As(err, &errno); ok && errno != 0 {
+		return nil, fmt.Errorf("first eventfd:%w", err)
 	}
 
 	// not sure what's up here.
 	// 1874054 ioctl(12, _IOC(_IOC_WRITE, 0xaf, 0x21, 0x10), 0xc000113d98) = -1 ENOTTY (Inappropriate ioctl for device)
 	// so strace thinks this ioctl is wrong.
-	if _, err := vhostSetVringCall.ioctl(fd, uintptr(unsafe.Pointer(&vhostVringFile{fd: int32(r1)}))); err != nil {
+	if err := vhostSetVringCall.ioctl(fd,
+		uintptr(unsafe.Pointer(&vhostVringFile{index: 0, fd: int32(r1)}))); err != nil {
 		return nil, fmt.Errorf("first vhostSetVringCall:%w", err)
 	}
 
 	r1, r2, err = syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
 	log.Printf("info:eventfd2; %v, %v, %v", r1, r2, err)
-	if err.(syscall.Errno) != 0 {
-		return nil, fmt.Errorf("Setting up second eventfd:%w", err)
+
+	if ok := errors.As(err, &errno); ok && errno != 0 {
+		return nil, fmt.Errorf("second eventfd:%w", err)
 	}
 
 	// not sure what's up here.
 	// 1874054 ioctl(12, _IOC(_IOC_WRITE, 0xaf, 0x21, 0x10), 0xc000113d98) = -1 ENOTTY (Inappropriate ioctl for device)
 	// so strace thinks this ioctl is wrong.
-	if _, err := vhostSetVringCall.ioctl(fd, uintptr(unsafe.Pointer(&vhostVringFile{fd: int32(r1)}))); err != nil {
+	// this line length is terrible.
+	if err := vhostSetVringCall.ioctl(fd,
+		uintptr(unsafe.Pointer(&vhostVringFile{index: 1, fd: int32(r1)}))); err != nil {
 		return nil, fmt.Errorf("second vhostSetVringCall:%w", err)
 	}
 
-	if _, err := vhostVsockSetGuestCID.ioctl(fd, uintptr(unsafe.Pointer(&cid))); err != nil {
-		return nil, fmt.Errorf("Set CID to %#x:%w", cid, err)
+	if err := vhostVsockSetGuestCID.ioctl(fd, uintptr(unsafe.Pointer(&cid))); err != nil {
+		return nil, fmt.Errorf("et CID to %#x:%w", cid, err)
 	}
 
-	return nil, nil
+	return &VSock{}, nil
 }
