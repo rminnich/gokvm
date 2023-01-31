@@ -128,7 +128,7 @@ func ParseArgs(args []string) (*Config, error) {
 		`virtio_pci.force_legacy=1 rdinit=/init init=/init`, "kernel command-line parameters")
 	flag.StringVar(&c.TapIfName, "t", "tap", "name of tap interface")
 	flag.StringVar(&c.Disk, "d", "/dev/zero", "path of disk file (for /dev/vda)")
-	flag.StringVar(&c.Vsock, "vsock", "/dev/vhost-vsock", "path of disk vsock device")
+	flag.StringVar(&c.Vsock, "vsock", "", "vsock device: default empty, set to /dev/vhost-vsock to try it")
 
 	flag.IntVar(&c.NCPUs, "c", 1, "number of cpus")
 
