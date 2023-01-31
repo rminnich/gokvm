@@ -58,7 +58,7 @@ var (
 	vhostGetFeatures   = IIOR(0x00, unsafe.Sizeof(u64))
 	vhostSetFeatures   = IIOW(0x00, unsafe.Sizeof(u64))
 	vhostSetOwner      = IIO(0x01)
-	vhostRESETxOwner   = IIO(002)
+	vhostRESETOwner   = IIO(002)
 	vhostSetMemTable   = IIOW(0x03, unsafe.Sizeof(vhostMemory{}))
 	vhostSetLogBase    = IIOW(0x04, unsafe.Sizeof(u64))
 	vhostSetLogFD      = IIOW(0x07, unsafe.Sizeof(i))
@@ -180,11 +180,13 @@ func NewVSock(dev string, routes flag.VSockRoutes) (*VSock, error) {
 	}
 
 	mmapSize := 128 * 1024
-	vr, err := syscall.Mmap(-1, 0, int(mmapSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED | syscall.MAP_ANONYMOUS)
+	vr, err := syscall.Mmap(-1, 0, int(mmapSize), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED|syscall.MAP_ANONYMOUS)
 	if err != nil {
 		return nil, err
 	}
-	if false { log.Printf("%#x", vr) }
+	if false {
+		log.Printf("%#x", vr)
+	}
 
 	fd := vs.Fd()
 
@@ -193,10 +195,27 @@ func NewVSock(dev string, routes flag.VSockRoutes) (*VSock, error) {
 	}
 
 	var features uint64
-	if _, err := vhostGetFeatures.ioctl(fd, uintptr(unsafe.Pointer(&features)));  err != nil {
+	if _, err := vhostGetFeatures.ioctl(fd, uintptr(unsafe.Pointer(&features))); err != nil {
 		return nil, fmt.Errorf("GetFeatures: %w", err)
 	}
 	log.Printf("features %#x", features)
+
+	// Must have en eventfd2
+	// system call $ not defined anywhere?
+	// EFD_CLOEXEC                                 = 0x80000
+	// EFD_NONBLOCK                                = 0x800
+	r1, r2, err := syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
+	log.Printf("eventfd1; %v, %v, %v", r1, r2, err)
+	if err.(syscall.Errno) != 0 { 
+		return nil, err
+	}
+
+	// not sure what's up here.
+	// 1874054 ioctl(12, _IOC(_IOC_WRITE, 0xaf, 0x21, 0x10), 0xc000113d98) = -1 ENOTTY (Inappropriate ioctl for device)
+	// so strace thinks this ioctl is wrong.
+	if _, err := vhostSetVringCall.ioctl(fd, uintptr(unsafe.Pointer(&vhostVringFile{fd: int(r1)}))); err != nil {
+		return nil, err
+	}
 
 	return nil, errx
 }
