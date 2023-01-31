@@ -26,8 +26,8 @@ type vhostVringState struct {
 	num   uint
 }
 type vhostVringFile struct {
-	//	index uint
-	fd int
+	index int32
+	fd int32
 }
 
 type vhostVringAddr struct {
@@ -77,6 +77,10 @@ var (
 	u                         uint32
 	vhostSCSISetEventsxMissed = IIOW(0x43, unsafe.Sizeof(u))
 	vhostSCSIGetEventsMissed  = IIOW(0x44, unsafe.Sizeof(u))
+
+	vhostVsockSetGuestCID = IIOW(0x60, unsafe.Sizeof(u64))
+	// int in c is 32 bits, not sure what it is in go really.
+	vhostVsockSetRunning = IIOW(0x61, unsafe.Sizeof(u))
 )
 
 // VSock is a single instance of a vsock connection
@@ -158,7 +162,7 @@ func (i ioval) ioctl(fd, arg uintptr) (uintptr, error) {
 	return res, nil
 }
 
-func NewVSock(dev string, routes flag.VSockRoutes) (*VSock, error) {
+func NewVSock(dev string, cid uint32, routes flag.VSockRoutes) (*VSock, error) {
 	// 	36865 openat(AT_FDCWD, "/dev/vhost-vsock", O_RDWR) = 37
 	// 	36865 mmap(NULL, 135168, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f2d4419d000
 	// 	36865 ioctl(37, VHOST_SET_OWNER, 0)     = 0
@@ -205,30 +209,34 @@ func NewVSock(dev string, routes flag.VSockRoutes) (*VSock, error) {
 	// EFD_CLOEXEC                                 = 0x80000
 	// EFD_NONBLOCK                                = 0x800
 	r1, r2, err := syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
-	log.Printf("eventfd1; %v, %v, %v", r1, r2, err)
+	log.Printf("info:eventfd1; %v, %v, %v", r1, r2, err)
 	if err.(syscall.Errno) != 0 {
-		return nil, err
+		return nil, fmt.Errorf("Setting up first eventfd:%w", err)
 	}
 
 	// not sure what's up here.
 	// 1874054 ioctl(12, _IOC(_IOC_WRITE, 0xaf, 0x21, 0x10), 0xc000113d98) = -1 ENOTTY (Inappropriate ioctl for device)
 	// so strace thinks this ioctl is wrong.
-	if _, err := vhostSetVringCall.ioctl(fd, uintptr(unsafe.Pointer(&vhostVringFile{fd: int(r1)}))); err != nil {
-		return nil, err
+	if _, err := vhostSetVringCall.ioctl(fd, uintptr(unsafe.Pointer(&vhostVringFile{fd: int32(r1)}))); err != nil {
+		return nil, fmt.Errorf("first vhostSetVringCall:%w", err)
 	}
 
 	r1, r2, err = syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
-	log.Printf("eventfd1; %v, %v, %v", r1, r2, err)
+	log.Printf("info:eventfd2; %v, %v, %v", r1, r2, err)
 	if err.(syscall.Errno) != 0 {
-		return nil, err
+		return nil, fmt.Errorf("Setting up second eventfd:%w", err)
 	}
 
 	// not sure what's up here.
 	// 1874054 ioctl(12, _IOC(_IOC_WRITE, 0xaf, 0x21, 0x10), 0xc000113d98) = -1 ENOTTY (Inappropriate ioctl for device)
 	// so strace thinks this ioctl is wrong.
-	if _, err := vhostSetVringCall.ioctl(fd, uintptr(unsafe.Pointer(&vhostVringFile{fd: int(r1)}))); err != nil {
-		return nil, err
+	if _, err := vhostSetVringCall.ioctl(fd, uintptr(unsafe.Pointer(&vhostVringFile{fd: int32(r1)}))); err != nil {
+		return nil, fmt.Errorf("second vhostSetVringCall:%w", err)
 	}
 
-	return nil, errx
+	if _, err := vhostVsockSetGuestCID.ioctl(fd, uintptr(unsafe.Pointer(&cid))); err != nil {
+		return nil, fmt.Errorf("Set CID to %#x:%w", cid, err)
+	}
+
+	return nil, nil
 }

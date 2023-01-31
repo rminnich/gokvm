@@ -43,7 +43,7 @@ func main() {
 		log.Fatalf("%v", err)
 	}
 
-	if v, err := virtio.NewVSock(c.Vsock, c.Routes); err != nil {
+	if v, err := virtio.NewVSock(c.Vsock, c.CID, c.Routes); err != nil {
 		log.Fatalf("newvsock: %v, %v", v, err)
 	}
 
