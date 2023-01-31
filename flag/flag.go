@@ -51,7 +51,7 @@ type Config struct {
 	TraceCount int
 	Routes     VSockRoutes
 	Vsock      string
-	CID        uint32
+	CID        uint64
 }
 
 // ParseSize parses a size string as number[gGmMkK]. The multiplier is optional,
@@ -119,7 +119,7 @@ func ParseArgs(args []string) (*Config, error) {
 	// ends well, so it will not be an option.
 	rand.Seed(time.Now().UnixNano())
 
-	c.CID = uint32(0x40) // oh, just give it rest, golangci-lint. rand.Intn(0xffffffff-3) + 3)
+	c.CID = 0x40 // oh, just give it rest, golangci-lint. rand.Intn(0xffffffff-3) + 3)
 
 	flag.StringVar(&c.Dev, "D", "/dev/kvm", "path of kvm device")
 	flag.StringVar(&c.Kernel, "k", "./bzImage", "kernel image path")

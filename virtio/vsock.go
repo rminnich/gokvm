@@ -162,7 +162,7 @@ func (i ioval) ioctl(fd, arg uintptr) error {
 	return nil
 }
 
-func NewVSock(dev string, cid uint32, routes flag.VSockRoutes) (*VSock, error) {
+func NewVSock(dev string, cid uint64, routes flag.VSockRoutes) (*VSock, error) {
 	var (
 		u64                   uint64
 		vhostGetFeatures      = IIOR(0x00, unsafe.Sizeof(u64))
