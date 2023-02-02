@@ -169,16 +169,71 @@ func (i ioval) ioctl(fd, arg uintptr) error {
 	return nil
 }
 
+// VsockMemory sets vsock memory. Not needed?
+// The minimum of (nregions, kernel nregions) is used.
+func VsockMemory(fd uintptr, nregions uint32) (*VhostMemory, error) {
+	const mmapSize = 16 * vhostPageSize
+
+	var (
+		vhostSetMemTable = IIOW(0x03, 8) // variable size C struct,
+		u64              uint64
+		vhostSetLogBase  = IIOW(0x04, unsafe.Sizeof(u64))
+	)
+
+	r, err := os.ReadFile("/sys/module/vhost/parameters/max_mem_regions")
+	if err == nil {
+		f := strings.Fields(string(r))
+		if len(f) > 0 {
+			x, err := strconv.ParseUint(f[0], 0, 1)
+			if err == nil && x < uint64(nregions) {
+				nregions = uint32(x)
+			}
+		}
+	}
+
+	v := &VhostMemory{Nregions: nregions}
+	for i := range v.Regions[:nregions] {
+		m, err := syscall.Mmap(-1, 0, mmapSize,
+			syscall.PROT_READ|syscall.PROT_WRITE,
+			syscall.MAP_SHARED|syscall.MAP_ANONYMOUS|syscall.MAP_POPULATE)
+		if err != nil {
+			return nil, fmt.Errorf("mmap %d bytes for region %d:%w", mmapSize, i, err)
+		}
+
+		v.Regions[i].MemorySize = uint64(mmapSize)
+		v.Regions[i].UserspaceAddr = uint64(uintptr(unsafe.Pointer(&m[0])))
+		// Start it at 512GiB
+		v.Regions[i].GuestPhysAddr = uint64(mmapSize*i) + (512 << 20)
+	}
+
+	log.Printf("set memtable to %#x", v.Regions[:nregions])
+
+	if err := vhostSetMemTable.ioctl(fd, uintptr(unsafe.Pointer(v))); err != nil {
+		return nil, fmt.Errorf("set memtable to %#x:%w", unsafe.Pointer(&v), err)
+	}
+
+	if err := vhostSetLogBase.ioctl(fd, uintptr(v.Regions[0].UserspaceAddr)); err != nil {
+		return nil, fmt.Errorf("set memtable to %#x:%w", unsafe.Pointer(&v), err)
+	}
+
+	return v, nil
+}
+
+// GuestCID sets the guest CID. If the passed-in CID is -1, a random CID is
+// used. uint64 for the cid is an ABI requirement, though the kernel will
+// error if any of the high 32 bits are used (for now).
+func GuestCID(fd uintptr, cid uint64) error {
+	return IIOW(0x60, unsafe.Sizeof(cid)).ioctl(fd, uintptr(unsafe.Pointer(&cid)))
+}
+
 func NewVSock(dev string, cid uint64, routes flag.VSockRoutes) (*VSock, error) {
 	var (
-		u64                   uint64
-		u32                   uint32 // a.k.a. int
-		vhostGetFeatures      = IIOR(0x00, unsafe.Sizeof(u64))
-		vhostSetOwner         = IIO(0x01)
-		vhostSetVringCall     = IIOW(0x21, 0x08) //  unsafe.Sizeof(vhostVringFile{})) // 0x4008af21
-		vhostVsockSetGuestCID = IIOW(0x60, unsafe.Sizeof(u64))
-		vhostVsockSetRunning  = IIOW(0x61, unsafe.Sizeof(u32))
-		vhostSetMemTable      = IIOW(0x03, 8) // variable size C struct,
+		u64                  uint64
+		u32                  uint32 // a.k.a. int
+		vhostGetFeatures     = IIOR(0x00, unsafe.Sizeof(u64))
+		vhostSetOwner        = IIO(0x01)
+		vhostSetVringCall    = IIOW(0x21, 0x08) //  unsafe.Sizeof(vhostVringFile{})) // 0x4008af21
+		vhostVsockSetRunning = IIOW(0x61, unsafe.Sizeof(u32))
 	)
 
 	// 	36865 openat(AT_FDCWD, "/dev/vhost-vsock", O_RDWR) = 37
@@ -249,48 +304,7 @@ func NewVSock(dev string, cid uint64, routes flag.VSockRoutes) (*VSock, error) {
 		return nil, fmt.Errorf("second vhostSetVringCall:%w", err)
 	}
 
-	r, err := os.ReadFile("/sys/module/vhost/parameters/max_mem_regions")
-	if err != nil {
-		log.Printf("can not read max_mem_regions, assuming 1")
-
-		r = []byte("1")
-	}
-
-	rsize := uint32(1)
-	// any number larger than 512 is no good.
-	f := strings.Fields(string(r))
-	if len(f) > 0 {
-		x, err := strconv.ParseUint(f[0], 0, 1)
-		if err == nil {
-			rsize = uint32(x)
-		}
-	}
-
-	mmapSize := 16 * vhostPageSize
-
-	v := VhostMemory{Nregions: rsize}
-	for i := range v.Regions[:rsize] {
-		m, err := syscall.Mmap(-1, 0, mmapSize,
-			syscall.PROT_READ|syscall.PROT_WRITE,
-			syscall.MAP_SHARED|syscall.MAP_ANONYMOUS|syscall.MAP_POPULATE)
-		if err != nil {
-			return nil, fmt.Errorf("mmap %d bytes for region %d:%w", mmapSize, i, err)
-		}
-
-		v.Regions[i].MemorySize = uint64(mmapSize)
-		v.Regions[i].UserspaceAddr = uint64(uintptr(unsafe.Pointer(&m[0])))
-		// Start it at 512GiB
-		v.Regions[i].GuestPhysAddr = uint64(mmapSize*i) + (512 << 20)
-	}
-
-	log.Printf("set memtable to %#x:%v", unsafe.Pointer(&v), err)
-	log.Printf("set memtable to %#x:%v", v, err)
-
-	if err := vhostSetMemTable.ioctl(fd, uintptr(unsafe.Pointer(&v))); err != nil {
-		return nil, fmt.Errorf("set memtable to %#x:%w", unsafe.Pointer(&v), err)
-	}
-
-	if err := vhostVsockSetGuestCID.ioctl(fd, uintptr(unsafe.Pointer(&cid))); err != nil {
+	if err := GuestCID(fd, cid); err != nil {
 		return nil, fmt.Errorf("set CID to %#x:%w", cid, err)
 	}
 
