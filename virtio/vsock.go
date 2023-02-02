@@ -95,9 +95,14 @@ var (
 
 // VSock is a single instance of a vsock connection.
 type VSock struct {
-	fd    [2]uintptr
-	Local net.Addr
-	v     *vhostVringAddr
+	f  *os.File
+	fd uintptr
+	// 0 is kick, 1 is call
+	efd      [2]uintptr
+	Local    net.Addr
+	vra      *vhostVringAddr
+	vm       *VhostMemory
+	features uint64
 }
 
 var errx = fmt.Errorf("not yet")
@@ -197,7 +202,7 @@ func mem(amt uintptr) (uintptr, []byte, error) {
 // well, you'll probably still be lucky enough to have an mmap for
 // the descriptors that is larger than the top of guest memory. Let's hope.
 // For now, we're just going to alloc 16M of memory in one region.
-func VsockMemory(fd uintptr, nregions uint32) (*VhostMemory, error) {
+func (v *VSock) Memory(nregions uint32) error {
 	const mmapSize = 16 * 256 * vhostPageSize
 
 	var (
@@ -221,82 +226,95 @@ func VsockMemory(fd uintptr, nregions uint32) (*VhostMemory, error) {
 		}
 	}
 
-	v := &VhostMemory{Nregions: nregions}
-	for i := range v.Regions[:nregions] {
+	vm := &VhostMemory{Nregions: nregions}
+	for i := range vm.Regions[:nregions] {
 		m, _, err := mem(mmapSize)
 		if err != nil {
-			return nil, fmt.Errorf("region %d:%w", i, err)
+			return fmt.Errorf("region %d:%w", i, err)
 		}
 
-		v.Regions[i].MemorySize = uint64(mmapSize)
-		v.Regions[i].UserspaceAddr = uint64(m)
-		v.Regions[i].GuestPhysAddr = uint64(m)
+		vm.Regions[i].MemorySize = uint64(mmapSize)
+		vm.Regions[i].UserspaceAddr = uint64(m)
+		vm.Regions[i].GuestPhysAddr = uint64(m)
 	}
 
-	log.Printf("set memtable to %#x", v.Regions[:nregions])
+	log.Printf("set memtable to %d regions %#x", vm.Nregions, vm.Regions[:nregions])
 
-	if err := vhostSetMemTable.ioctl(fd, uintptr(unsafe.Pointer(v))); err != nil {
-		return nil, fmt.Errorf("set memtable to %#x:%w", unsafe.Pointer(&v), err)
+	if err := vhostSetMemTable.ioctl(v.fd, uintptr(unsafe.Pointer(vm))); err != nil {
+		return fmt.Errorf("set memtable to %#x:%w", unsafe.Pointer(&v), err)
 	}
 
-	if err := vhostSetLogBase.ioctl(fd, uintptr(v.Regions[0].UserspaceAddr)); err != nil {
-		return nil, fmt.Errorf("set memtable to %#x:%w", unsafe.Pointer(&v), err)
+	// Not sure if we need this, but ...
+	// And how big should it be? Great questio .
+	m, _, err := mem(64 * 1024)
+	if err != nil {
+		return fmt.Errorf("logbase:%w", err)
 	}
 
-	return v, nil
+	// no idea what this should be even.
+	if err := vhostSetLogBase.ioctl(v.fd, m); err != nil {
+		return fmt.Errorf("set logbase to %#x:%w", unsafe.Pointer(&m), err)
+	}
+
+	v.vm = vm
+
+	return nil
 }
 
 // GuestCID sets the guest CID. If the passed-in CID is -1, a random CID is
 // used. uint64 for the cid is an ABI requirement, though the kernel will
 // error if any of the high 32 bits are used (for now).
-func GuestCID(fd uintptr, cid uint64) error {
-	return IIOW(0x60, unsafe.Sizeof(cid)).ioctl(fd, uintptr(unsafe.Pointer(&cid)))
+func (v *VSock) GuestCID(cid uint64) error {
+	return IIOW(0x60, unsafe.Sizeof(cid)).ioctl(v.fd, uintptr(unsafe.Pointer(&cid)))
 }
 
 // SetOwner sets the owner. This MUST be the first step, for now. kvm can always change.
-func SetOwner(fd, owner uintptr) error {
-	return IIO(1).ioctl(fd, owner)
+func (v *VSock) SetOwner(owner uintptr) error {
+	return IIO(1).ioctl(v.fd, owner)
 }
 
 // Features returns the features, after first setting any desired features.
-func Features(fd uintptr, features ...uint64) (uint64, error) {
+func (v *VSock) Features(features ...uint64) error {
 	for f := range features {
-		if err := IIOW(0x00, unsafe.Sizeof(f)).ioctl(fd, uintptr(unsafe.Pointer(&f))); err != nil {
-			return 0, fmt.Errorf("SetFeatures(%#x): %w", f, err)
+		if err := IIOW(0x00, unsafe.Sizeof(f)).ioctl(v.fd, uintptr(unsafe.Pointer(&f))); err != nil {
+			return fmt.Errorf("SetFeatures(%#x): %w", f, err)
 		}
 	}
 
-	var f uint64
-	if err := IIOR(0x00, unsafe.Sizeof(f)).ioctl(fd, uintptr(unsafe.Pointer(&f))); err != nil {
-		return 0, fmt.Errorf("GetFeatures: %w", err)
+	if err := IIOR(0x00, unsafe.Sizeof(v.features)).ioctl(v.fd, uintptr(unsafe.Pointer(&v.features))); err != nil {
+		return fmt.Errorf("GetFeatures: %w", err)
 	}
 
-	return f, nil
+	return nil
 }
 
 // Call sets up VringCall fds.
-func Call(fd uintptr) (uintptr, error) {
-	r1, r2, err := syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
-	log.Printf("Call Syscall: %v, %v, %v", r1, r2, err)
+func (v *VSock) Call() error {
+	for i := range v.efd[:] {
+		r1, r2, err := syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
+		log.Printf("eventfd Syscall %d: %v, %v, %v", i, r1, r2, err)
 
-	var errno syscall.Errno
-	if ok := errors.As(err, &errno); ok && errno != 0 {
-		return 0, fmt.Errorf("eventfd:%w", err)
+		var errno syscall.Errno
+		if ok := errors.As(err, &errno); ok && errno != 0 {
+			return fmt.Errorf("eventfd %d:%w", i, err)
+		}
+
+		if err := IIOW(0x21, 0x08).ioctl(v.fd,
+			uintptr(unsafe.Pointer(&vhostVringFile{index: 0, fd: int32(r1)}))); err != nil {
+			return fmt.Errorf("eventfd %d vhostSetVringCall:%w", i, err)
+		}
+
+		v.efd[i] = r1
 	}
 
-	if err := IIOW(0x21, 0x08).ioctl(fd,
-		uintptr(unsafe.Pointer(&vhostVringFile{index: 0, fd: int32(r1)}))); err != nil {
-		return 0, fmt.Errorf("first vhostSetVringCall:%w", err)
-	}
-
-	return r1, nil
+	return nil
 }
 
 // VRing sets up vrings.
 // It is not clear how big the rings should be, but packets are generally
 // 1500 bytes or less, so allocate blocks of 2048 to keep things
 // reasonable. Further, each descriptor block will be 512 entries.
-func VRing(fd uintptr) (*vhostVringAddr, error) {
+func (v *VSock) VRing() error {
 	pages := uintptr(1) // descUserAddr
 	pages += 1          // usedUserAddr
 	pages += 1          // availUserAddr
@@ -305,11 +323,11 @@ func VRing(fd uintptr) (*vhostVringAddr, error) {
 
 	mp, base, err := mem(pages * vhostPageSize)
 	if err != nil {
-		return nil, fmt.Errorf("VRing:%w", err)
+		return fmt.Errorf("VRing:%w", err)
 	}
 
 	m := uint64(mp)
-	v := &vhostVringAddr{
+	vra := &vhostVringAddr{
 		index:         0,
 		flags:         0,
 		descUserAddr:  m,
@@ -323,75 +341,60 @@ func VRing(fd uintptr) (*vhostVringAddr, error) {
 		binary.LittleEndian.PutUint64(base[i*8:], m+uint64(4*vhostPageSize+2048*i))
 	}
 
-	return v, os.ErrInvalid
+	v.vra = vra
+
+	return nil
 }
 
 // SetRunning Sets the running state to a value.
 // For now, the state is 0 (stopped) or 1 or more (running).
-func SetRunning(fd, state uintptr) error {
+func (v *VSock) SetRunning(state uintptr) error {
 	// so, state is kind of 64 bits, but the ioctl seems to require
 	// a u32 or int?
 	// This works just fine on little endian machines and, let's face it, that's what
 	// everything is.
-	return IIOW(0x61, unsafe.Sizeof(uint32(1))).ioctl(fd, uintptr(unsafe.Pointer(&state)))
+	return IIOW(0x61, unsafe.Sizeof(uint32(1))).ioctl(v.fd, uintptr(unsafe.Pointer(&state)))
 }
 
 // NewVsock returns a NewVsock using the supplied device name and a set of routes.
 func NewVSock(dev string, cid uint64, routes flag.VSockRoutes) (*VSock, error) {
-	vsock := &VSock{}
-
-	// 	36865 openat(AT_FDCWD, "/dev/vhost-vsock", O_RDWR) = 37
-	// 	36865 mmap(NULL, 135168, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f2d4419d000
-	// 	36865 ioctl(37, VHOST_SET_OWNER, 0)     = 0
-	// 	36865 ioctl(37, VHOST_GET_FEATURES, 0x7ffc65fdc2e0) = 0
-	// 	36865 eventfd2(0, EFD_CLOEXEC|EFD_NONBLOCK) = 38
-	// 	36865 ioctl(37, VHOST_SET_VRING_CALL, 0x7ffc65fdc2f0) = 0
-	// 	36865 eventfd2(0, EFD_CLOEXEC|EFD_NONBLOCK) = 39
-	// 	36865 ioctl(37, VHOST_SET_VRING_CALL, 0x7ffc65fdc2f0) = 0
-	// 	36865 openat(AT_FDCWD, "/sys/module/vhost/parameters/max_mem_regions", O_RDONLY) = 40
-	// 	36865 newfstatat(40, "", {st_mode=S_IFREG|0444, st_size=4096, ...}, AT_EMPTY_PATH) = 0
-	// 	36865 read(40, "64\n", 4096)            = 3
-	// 	36865 read(40, "", 4093)                = 0
-	// 	36865 close(40)                         = 0
-	// 	36865 futex(0x7f2d481d1fe8, FUTEX_WAKE_PRIVATE, 2147483647) = 0
-	// 36865 ioctl(37, VHOST_VSOCK_SET_GUEST_CID, 0x7ffc65fdc328) = 0
-	vs, err := os.OpenFile(dev, os.O_RDWR, 0)
+	// These steps are roughly equivalent to the vdev_info_init function in virtio_test.c
+	f, err := os.OpenFile(dev, os.O_RDWR, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	fd := vs.Fd()
+	v := &VSock{f: f, fd: f.Fd()}
 
-	if err := SetOwner(fd, 0); err != nil {
+	if err := v.SetOwner(0); err != nil {
 		return nil, err
 	}
 
-	features, err := Features(fd)
-	if err != nil {
+	if err := v.Features(); err != nil {
 		return nil, err
 	}
 
-	log.Printf("features %#x", features)
+	log.Printf("features %#x", v.features)
 
-	for i := range vsock.fd[:] {
-		vsock.fd[i], err = Call(fd)
-		if err != nil {
-			return nil, fmt.Errorf("evenfd %d::%w", i, err)
-		}
+	if err := v.Memory(1); err != nil {
+		return nil, fmt.Errorf("memory(1):%w", err)
 	}
 
-	v, err := VRing(fd)
-	if err != nil {
+	// Now we move on to the vq_info_add steps
+
+	if err := v.Call(); err != nil {
+		return nil, err
+	}
+
+	if err := v.VRing(); err != nil {
 		return nil, fmt.Errorf("vring:%w", err)
 	}
 
-	vsock.v = v
-
-	if err := GuestCID(fd, cid); err != nil {
+	if err := v.GuestCID(cid); err != nil {
 		return nil, fmt.Errorf("set CID to %#x:%w", cid, err)
 	}
 
-	if err := SetRunning(fd, 1); err != nil {
+	if err := v.SetRunning(1); err != nil {
 		return nil, fmt.Errorf("set running to 1:%w", err)
 	}
 
