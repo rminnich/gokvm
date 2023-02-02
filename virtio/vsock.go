@@ -94,6 +94,7 @@ var (
 
 // VSock is a single instance of a vsock connection.
 type VSock struct {
+	fd    [2]uintptr
 	Local net.Addr
 }
 
@@ -226,14 +227,53 @@ func GuestCID(fd uintptr, cid uint64) error {
 	return IIOW(0x60, unsafe.Sizeof(cid)).ioctl(fd, uintptr(unsafe.Pointer(&cid)))
 }
 
+// SetOwner sets the owner. This MUST be the first step, for now. kvm can always change.
+func SetOwner(fd, owner uintptr) error {
+	return IIO(1).ioctl(fd, owner)
+}
+
+// Features returns the features, after first setting any desired features.
+func Features(fd uintptr, features ...uint64) (uint64, error) {
+	for f := range features {
+		if err := IIOW(0x00, unsafe.Sizeof(f)).ioctl(fd, uintptr(unsafe.Pointer(&f))); err != nil {
+			return 0, fmt.Errorf("SetFeatures(%#x): %w", f, err)
+		}
+	}
+
+	var f uint64
+	if err := IIOR(0x00, unsafe.Sizeof(f)).ioctl(fd, uintptr(unsafe.Pointer(&f))); err != nil {
+		return 0, fmt.Errorf("GetFeatures: %w", err)
+	}
+
+	return f, nil
+}
+
+// Call sets up VringCall fds.
+func Call(fd uintptr) (uintptr, error) {
+	r1, r2, err := syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
+	log.Printf("Call Syscall: %v, %v, %v", r1, r2, err)
+
+	var errno syscall.Errno
+	if ok := errors.As(err, &errno); ok && errno != 0 {
+		return 0, fmt.Errorf("eventfd:%w", err)
+	}
+
+	if err := IIOW(0x21, 0x08).ioctl(fd,
+		uintptr(unsafe.Pointer(&vhostVringFile{index: 0, fd: int32(r1)}))); err != nil {
+		return 0, fmt.Errorf("first vhostSetVringCall:%w", err)
+	}
+
+	return r1, nil
+}
+
+// NewVsock returns a NewVsock using the supplied device name and a set of routes.
 func NewVSock(dev string, cid uint64, routes flag.VSockRoutes) (*VSock, error) {
 	var (
-		u64                  uint64
-		u32                  uint32 // a.k.a. int
-		vhostGetFeatures     = IIOR(0x00, unsafe.Sizeof(u64))
-		vhostSetOwner        = IIO(0x01)
-		vhostSetVringCall    = IIOW(0x21, 0x08) //  unsafe.Sizeof(vhostVringFile{})) // 0x4008af21
+		u64 uint64
+		u32 uint32 // a.k.a. int
+
 		vhostVsockSetRunning = IIOW(0x61, unsafe.Sizeof(u32))
+		vsock                = &VSock{}
 	)
 
 	// 	36865 openat(AT_FDCWD, "/dev/vhost-vsock", O_RDWR) = 37
@@ -257,51 +297,23 @@ func NewVSock(dev string, cid uint64, routes flag.VSockRoutes) (*VSock, error) {
 	}
 
 	fd := vs.Fd()
-	if err := vhostSetOwner.ioctl(fd, 0); err != nil {
+
+	if err := SetOwner(fd, 0); err != nil {
 		return nil, err
 	}
 
-	var features uint64
-	if err := vhostGetFeatures.ioctl(fd, uintptr(unsafe.Pointer(&features))); err != nil {
-		return nil, fmt.Errorf("GetFeatures: %w", err)
+	features, err := Features(fd)
+	if err != nil {
+		return nil, err
 	}
 
 	log.Printf("features %#x", features)
 
-	// Must have en eventfd2
-	// system call $ not defined anywhere?
-	// EFD_CLOEXEC                                 = 0x80000
-	// EFD_NONBLOCK                                = 0x800
-	r1, r2, err := syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
-	log.Printf("info:eventfd1; %v, %v, %v", r1, r2, err)
-
-	var errno syscall.Errno
-	if ok := errors.As(err, &errno); ok && errno != 0 {
-		return nil, fmt.Errorf("first eventfd:%w", err)
-	}
-
-	// not sure what's up here.
-	// 1874054 ioctl(12, _IOC(_IOC_WRITE, 0xaf, 0x21, 0x10), 0xc000113d98) = -1 ENOTTY (Inappropriate ioctl for device)
-	// so strace thinks this ioctl is wrong.
-	if err := vhostSetVringCall.ioctl(fd,
-		uintptr(unsafe.Pointer(&vhostVringFile{index: 0, fd: int32(r1)}))); err != nil {
-		return nil, fmt.Errorf("first vhostSetVringCall:%w", err)
-	}
-
-	r1, r2, err = syscall.Syscall(syscall.SYS_EVENTFD2, 0, 0x80000|0x800, 0)
-	log.Printf("info:eventfd2; %v, %v, %v", r1, r2, err)
-
-	if ok := errors.As(err, &errno); ok && errno != 0 {
-		return nil, fmt.Errorf("second eventfd:%w", err)
-	}
-
-	// not sure what's up here.
-	// 1874054 ioctl(12, _IOC(_IOC_WRITE, 0xaf, 0x21, 0x10), 0xc000113d98) = -1 ENOTTY (Inappropriate ioctl for device)
-	// so strace thinks this ioctl is wrong.
-	// this line length is terrible.
-	if err := vhostSetVringCall.ioctl(fd,
-		uintptr(unsafe.Pointer(&vhostVringFile{index: 1, fd: int32(r1)}))); err != nil {
-		return nil, fmt.Errorf("second vhostSetVringCall:%w", err)
+	for i := range vsock.fd[:] {
+		vsock.fd[i], err = Call(fd)
+		if err != nil {
+			return nil, fmt.Errorf("evenfd %d::%w", i, err)
+		}
 	}
 
 	if err := GuestCID(fd, cid); err != nil {
