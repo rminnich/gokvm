@@ -266,15 +266,19 @@ func Call(fd uintptr) (uintptr, error) {
 	return r1, nil
 }
 
+// SetRunning Sets the running state to a value.
+// For now, the state is 0 (stopped) or 1 or more (running).
+func SetRunning(fd, state uintptr) error {
+	// so, state is kind of 64 bits, but the ioctl seems to require
+	// a u32 or int?
+	// This works just fine on little endian machines and, let's face it, that's what
+	// everything is.
+	return IIOW(0x61, unsafe.Sizeof(uint32(1))).ioctl(fd, uintptr(unsafe.Pointer(&state)))
+}
+
 // NewVsock returns a NewVsock using the supplied device name and a set of routes.
 func NewVSock(dev string, cid uint64, routes flag.VSockRoutes) (*VSock, error) {
-	var (
-		u64 uint64
-		u32 uint32 // a.k.a. int
-
-		vhostVsockSetRunning = IIOW(0x61, unsafe.Sizeof(u32))
-		vsock                = &VSock{}
-	)
+	vsock := &VSock{}
 
 	// 	36865 openat(AT_FDCWD, "/dev/vhost-vsock", O_RDWR) = 37
 	// 	36865 mmap(NULL, 135168, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f2d4419d000
@@ -320,8 +324,7 @@ func NewVSock(dev string, cid uint64, routes flag.VSockRoutes) (*VSock, error) {
 		return nil, fmt.Errorf("set CID to %#x:%w", cid, err)
 	}
 
-	u64 = 1
-	if err := vhostVsockSetRunning.ioctl(fd, uintptr(unsafe.Pointer(&u64))); err != nil {
+	if err := SetRunning(fd, 1); err != nil {
 		return nil, fmt.Errorf("set running to 1:%w", err)
 	}
 
