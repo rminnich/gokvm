@@ -1,6 +1,7 @@
 package virtio
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -35,14 +36,14 @@ type vhostVringFile struct {
 	fd    int32
 }
 
-// type vhostVringAddr struct {
-// 	index         uint
-// 	flags         uint
-// 	descUserAddr  uint64
-// 	usedUserAddr  uint64
-// 	availUserAddr uint64
-// 	logGuestAddr  uint64
-// }
+type vhostVringAddr struct {
+	index         uint
+	flags         uint
+	descUserAddr  uint64
+	usedUserAddr  uint64
+	availUserAddr uint64
+	logGuestAddr  uint64
+}
 
 // VhostMemoryRegion defines a single memory region.
 type VhostMemoryRegion struct {
@@ -96,6 +97,7 @@ var (
 type VSock struct {
 	fd    [2]uintptr
 	Local net.Addr
+	v     *vhostVringAddr
 }
 
 var errx = fmt.Errorf("not yet")
@@ -170,15 +172,42 @@ func (i ioval) ioctl(fd, arg uintptr) error {
 	return nil
 }
 
+// mem allocates memory using mmap and returns the address as uintptr and the slice.
+func mem(amt uintptr) (uintptr, []byte, error) {
+	prot := syscall.PROT_READ | syscall.PROT_WRITE
+	flags := syscall.MAP_SHARED | syscall.MAP_ANONYMOUS | syscall.MAP_POPULATE
+
+	m, err := syscall.Mmap(-1, 0, int(amt), prot, flags)
+	if err != nil {
+		return 0, nil, fmt.Errorf("mem(%#x):%w", amt, err)
+	}
+
+	return uintptr(unsafe.Pointer(&m[0])), m, err
+}
+
 // VsockMemory sets vsock memory. Not needed?
 // The minimum of (nregions, kernel nregions) is used.
+// There is a very strange "why does it work" thing going on here.
+// In the tests in Linux, the set the Guest PA to be User PA.
+// How can that work?
+// It will most likely work because the guest base memory
+// is mmap'ed, and so further mmaps won't overlap.
+// but isn't the memory for the guest set to zero?
+// What if the mmap for the rings is in the range 0..sizeof(guest memory)
+// well, you'll probably still be lucky enough to have an mmap for
+// the descriptors that is larger than the top of guest memory. Let's hope.
+// For now, we're just going to alloc 16M of memory in one region.
 func VsockMemory(fd uintptr, nregions uint32) (*VhostMemory, error) {
-	const mmapSize = 16 * vhostPageSize
+	const mmapSize = 16 * 256 * vhostPageSize
 
 	var (
-		vhostSetMemTable = IIOW(0x03, 8) // variable size C struct,
-		u64              uint64
-		vhostSetLogBase  = IIOW(0x04, unsafe.Sizeof(u64))
+		// Why 8? It's a variable size C struct,
+		// with potentially 0 items at the end, only
+		// 8 bytes of data are required.
+		vhostSetMemTable = IIOW(0x03, 8)
+
+		u64             uint64
+		vhostSetLogBase = IIOW(0x04, unsafe.Sizeof(u64))
 	)
 
 	r, err := os.ReadFile("/sys/module/vhost/parameters/max_mem_regions")
@@ -194,17 +223,14 @@ func VsockMemory(fd uintptr, nregions uint32) (*VhostMemory, error) {
 
 	v := &VhostMemory{Nregions: nregions}
 	for i := range v.Regions[:nregions] {
-		m, err := syscall.Mmap(-1, 0, mmapSize,
-			syscall.PROT_READ|syscall.PROT_WRITE,
-			syscall.MAP_SHARED|syscall.MAP_ANONYMOUS|syscall.MAP_POPULATE)
+		m, _, err := mem(mmapSize)
 		if err != nil {
-			return nil, fmt.Errorf("mmap %d bytes for region %d:%w", mmapSize, i, err)
+			return nil, fmt.Errorf("region %d:%w", i, err)
 		}
 
 		v.Regions[i].MemorySize = uint64(mmapSize)
-		v.Regions[i].UserspaceAddr = uint64(uintptr(unsafe.Pointer(&m[0])))
-		// Start it at 512GiB
-		v.Regions[i].GuestPhysAddr = uint64(mmapSize*i) + (512 << 20)
+		v.Regions[i].UserspaceAddr = uint64(m)
+		v.Regions[i].GuestPhysAddr = uint64(m)
 	}
 
 	log.Printf("set memtable to %#x", v.Regions[:nregions])
@@ -266,6 +292,40 @@ func Call(fd uintptr) (uintptr, error) {
 	return r1, nil
 }
 
+// VRing sets up vrings.
+// It is not clear how big the rings should be, but packets are generally
+// 1500 bytes or less, so allocate blocks of 2048 to keep things
+// reasonable. Further, each descriptor block will be 512 entries.
+func VRing(fd uintptr) (*vhostVringAddr, error) {
+	pages := uintptr(1) // descUserAddr
+	pages += 1          // usedUserAddr
+	pages += 1          // availUserAddr
+	pages += 1          // logGuestAddr
+	pages += 128        // enough for 256 packets
+
+	mp, base, err := mem(pages * vhostPageSize)
+	if err != nil {
+		return nil, fmt.Errorf("VRing:%w", err)
+	}
+
+	m := uint64(mp)
+	v := &vhostVringAddr{
+		index:         0,
+		flags:         0,
+		descUserAddr:  m,
+		usedUserAddr:  m + 1*vhostPageSize,
+		availUserAddr: m + 2*vhostPageSize,
+		logGuestAddr:  m + 3*vhostPageSize,
+	}
+
+	// Fill in the actual addresses
+	for i := 0; i < 256; i++ {
+		binary.LittleEndian.PutUint64(base[i*8:], m+uint64(4*vhostPageSize+2048*i))
+	}
+
+	return v, os.ErrInvalid
+}
+
 // SetRunning Sets the running state to a value.
 // For now, the state is 0 (stopped) or 1 or more (running).
 func SetRunning(fd, state uintptr) error {
@@ -319,6 +379,13 @@ func NewVSock(dev string, cid uint64, routes flag.VSockRoutes) (*VSock, error) {
 			return nil, fmt.Errorf("evenfd %d::%w", i, err)
 		}
 	}
+
+	v, err := VRing(fd)
+	if err != nil {
+		return nil, fmt.Errorf("vring:%w", err)
+	}
+
+	vsock.v = v
 
 	if err := GuestCID(fd, cid); err != nil {
 		return nil, fmt.Errorf("set CID to %#x:%w", cid, err)
