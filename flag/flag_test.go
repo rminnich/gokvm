@@ -27,7 +27,7 @@ func TestParseArg(t *testing.T) {
 		"-d",
 		"disk_path",
 		"-m",
-		"1G",
+		"34@45@hike",
 		"-T",
 		"1M",
 	}
@@ -69,8 +69,11 @@ func TestParseArg(t *testing.T) {
 		t.Error("invalid number of vcpus")
 	}
 
-	if c.MemSize != 1<<30 {
-		t.Errorf("msize: got %#x, want %#x", c.MemSize, 1<<30)
+	if len(c.MemRanges) != 1 {
+		t.Errorf("MemRanges: got len %d want 1", len(c.MemRanges))
+	}
+	if c.MemRanges[0] != "34@45@hike" {
+		t.Errorf("c.MemRanges[0]: got %s, want %s", c.MemRanges[0], "34@45@hike")
 	}
 
 	if c.TraceCount != 1<<20 {

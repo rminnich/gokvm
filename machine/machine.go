@@ -107,7 +107,12 @@ const (
 	Poison = "\xB8\xBE\xBA\xFE\xCA\x90\x0F\x0B"
 )
 
-var ErrZeroSizeKernel = errors.New("kernel is 0 bytes")
+var (
+	DefaultMemRange   = []string{"0x000000@0x20000000@/dev/zero"}
+	ErrZeroSizeKernel = errors.New("kernel is 0 bytes")
+	ErrNoMemoryRanges = errors.New("no memory ranges were specified")
+	ErrSyntax         = errors.New("range must be base@size@[file]")
+)
 
 // ErrWriteToCF9 indicates a write to cf9, the standard x86 reset port.
 var ErrWriteToCF9 = fmt.Errorf("power cycle via 0xcf9")
@@ -127,7 +132,7 @@ var ErrMemTooSmall = fmt.Errorf("mem request must be at least 1<<20")
 type Machine struct {
 	kvmFd, vmFd    uintptr
 	vcpuFds        []uintptr
-	mem            []byte
+	mem            []*MemRange
 	runs           []*kvm.RunData
 	pci            *pci.PCI
 	serial         *serial.Serial
@@ -136,7 +141,31 @@ type Machine struct {
 
 // New creates a new KVM. This includes opening the kvm device, creating VM, creating
 // vCPUs, and attaching memory, disk (if needed), and tap (if needed).
-func New(kvmPath string, nCpus int, memSize int) (*Machine, error) {
+func New(kvmPath string, nCpus int, spec []string) (*Machine, error) {
+	if len(spec) == 0 {
+		return nil, ErrNoMemoryRanges
+	}
+	var mem []*MemRange
+	var memSize uint64
+	for _, s := range spec {
+		r, err := ParseMemRange(s)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.MapRange(); err != nil {
+			return nil, err
+		}
+		// Poison memory.
+		// 0 is valid instruction and if you start running in the middle of all those
+		// 0's it is impossible to diagnore.
+		for i := uint64(0); i < r.Size; i += uint64(len(Poison)) {
+			copy(r.Data[i:], Poison)
+		}
+
+		mem = append(mem, r)
+		memSize += r.Size
+	}
+
 	if memSize < MinMemSize {
 		return nil, fmt.Errorf("memory size %d:%w", memSize, ErrMemTooSmall)
 	}
@@ -159,29 +188,16 @@ func New(kvmPath string, nCpus int, memSize int) (*Machine, error) {
 		}
 	}
 
-	// Another coding anti-pattern reguired by golangci-lint.
-	// Would not pass review in Google.
-	if m.mem, err = syscall.Mmap(-1, 0, memSize,
-		syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_SHARED|syscall.MAP_ANONYMOUS); err != nil {
-		return m, err
-	}
+	for i := range mem {
+		if err = kvm.SetUserMemoryRegion(m.vmFd, &kvm.UserspaceMemoryRegion{
+			Slot: uint32(i), Flags: 0, GuestPhysAddr: uint64(mem[i].Base), MemorySize: uint64(mem[i].Size),
+			UserspaceAddr: uint64(uintptr(unsafe.Pointer(&mem[i].Data[0]))),
+		}); err != nil {
+			return nil, err
+		}
 
-	err = kvm.SetUserMemoryRegion(m.vmFd, &kvm.UserspaceMemoryRegion{
-		Slot: 0, Flags: 0, GuestPhysAddr: 0, MemorySize: uint64(memSize),
-		UserspaceAddr: uint64(uintptr(unsafe.Pointer(&m.mem[0]))),
-	})
-	if err != nil {
-		return m, err
 	}
-
-	// Poison memory.
-	// 0 is valid instruction and if you start running in the middle of all those
-	// 0's it is impossible to diagnore.
-	for i := highMemBase; i < len(m.mem); i += len(Poison) {
-		copy(m.mem[i:], Poison)
-	}
-
+	m.mem = mem
 	return m, nil
 }
 
@@ -191,7 +207,7 @@ func (m *Machine) AddTapIf(tapIfName string) error {
 		return err
 	}
 
-	v := virtio.NewNet(virtioNetIRQ, m, t, m.mem)
+	v := virtio.NewNet(virtioNetIRQ, m, t, m.mem[0].Data)
 	go v.TxThreadEntry()
 	go v.RxThreadEntry()
 	// 00:01.0 for Virtio net
@@ -201,7 +217,7 @@ func (m *Machine) AddTapIf(tapIfName string) error {
 }
 
 func (m *Machine) AddDisk(diskPath string) error {
-	v, err := virtio.NewBlk(diskPath, virtioBlkIRQ, m, m.mem)
+	v, err := virtio.NewBlk(diskPath, virtioBlkIRQ, m, m.mem[0].Data)
 	if err != nil {
 		return err
 	}
@@ -271,17 +287,17 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 		return err
 	}
 
-	copy(m.mem[bootparam.EBDAStart:], bytes)
+	copy(m.mem[0].Data[bootparam.EBDAStart:], bytes)
 
 	// Load initrd
-	initrdSize, err := initrd.ReadAt(m.mem[initrdAddr:], 0)
+	initrdSize, err := initrd.ReadAt(m.mem[0].Data[initrdAddr:], 0)
 	if err != nil && initrdSize == 0 && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("initrd: (%v, %w)", initrdSize, err)
 	}
 
 	// Load kernel command-line parameters
-	copy(m.mem[cmdlineAddr:], params)
-	m.mem[cmdlineAddr+len(params)] = 0 // for null terminated string
+	copy(m.mem[0].Data[cmdlineAddr:], params)
+	m.mem[0].Data[cmdlineAddr+len(params)] = 0 // for null terminated string
 
 	// try to read as ELF. If it fails, no problem,
 	// next effort is to read as a bzimage.
@@ -321,7 +337,7 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 	)
 	bootParam.AddE820Entry(
 		highMemBase,
-		uint64(len(m.mem)-highMemBase),
+		uint64(len(m.mem[0].Data)-highMemBase),
 		bootparam.E820Ram,
 	)
 
@@ -340,7 +356,7 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 		return err
 	}
 
-	copy(m.mem[bootParamAddr:], bytes)
+	copy(m.mem[0].Data[bootParamAddr:], bytes)
 
 	var (
 		amd64    bool
@@ -359,7 +375,7 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 		// refs: https://www.kernel.org/doc/html/latest/x86/boot.html#loading-the-rest-of-the-kernel
 		setupsz := int(bootParam.Hdr.SetupSects+1) * 512
 
-		kernSize, err = kernel.ReadAt(m.mem[DefaultKernelAddr:], int64(setupsz))
+		kernSize, err = kernel.ReadAt(m.mem[0].Data[DefaultKernelAddr:], int64(setupsz))
 
 		if err != nil && !errors.Is(err, io.EOF) {
 			return fmt.Errorf("kernel: (%v, %w)", kernSize, err)
@@ -378,7 +394,7 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 
 			log.Printf("Load elf segment @%#x from file %#x %#x bytes", p.Paddr, p.Off, p.Filesz)
 
-			n, err := p.ReadAt(m.mem[p.Paddr:], 0)
+			n, err := p.ReadAt(m.mem[0].Data[p.Paddr:], 0)
 			if !errors.Is(err, io.EOF) || uint64(n) != p.Filesz {
 				return fmt.Errorf("reading ELF prog %d@%#x: %d/%d bytes, err %w", i, p.Paddr, n, p.Filesz, err)
 			}
@@ -493,7 +509,7 @@ func (m *Machine) initSregs(vcpufd uintptr, amd64 bool) error {
 		return nil
 	}
 
-	high64k := m.mem[pageTableBase : pageTableBase+0x6000]
+	high64k := m.mem[0].Data[pageTableBase : pageTableBase+0x6000]
 
 	// zero out the page tables.
 	// but we might in fact want to poison them?
@@ -549,7 +565,7 @@ func (m *Machine) initSregs(vcpufd uintptr, amd64 bool) error {
 
 	// set to true to debug.
 	if false {
-		log.Printf("Page tables: %s", hex.Dump(m.mem[pageTableBase:pageTableBase+0x3000]))
+		log.Printf("Page tables: %s", hex.Dump(m.mem[0].Data[pageTableBase:pageTableBase+0x3000]))
 	}
 
 	sregs.CR3 = uint64(pageTableBase)
@@ -860,18 +876,18 @@ func (m *Machine) InjectVirtioBlkIRQ() error {
 
 // ReadAt implements io.ReadAt for the kvm guest memory.
 func (m *Machine) ReadAt(b []byte, off int64) (int, error) {
-	mem := bytes.NewReader(m.mem)
+	mem := bytes.NewReader(m.mem[0].Data)
 
 	return mem.ReadAt(b, off)
 }
 
 // WriteAt implements io.WriteAt for the kvm guest memory.
 func (m *Machine) WriteAt(b []byte, off int64) (int, error) {
-	if off > int64(len(m.mem)) {
+	if off > int64(len(m.mem[0].Data)) {
 		return 0, syscall.EFBIG
 	}
 
-	n := copy(m.mem[off:], b)
+	n := copy(m.mem[0].Data[off:], b)
 
 	return n, nil
 }
@@ -926,13 +942,23 @@ func (m *Machine) VtoP(cpu int, vaddr uint64) (int64, error) {
 		return -1, err
 	}
 
-	// There can exist a valid translation for memory that does not exist.
-	// For now, we call that an error.
-	if t.Valid == 0 || t.PhysicalAddress > uint64(len(m.mem)) {
+	if t.Valid == 0 {
 		return -1, fmt.Errorf("%#x:valid not set:%w", vaddr, ErrBadVA)
 	}
 
-	return int64(t.PhysicalAddress), nil
+	// There can exist a valid translation for memory that does not exist.
+	// For now, we call that an error.
+	for _, m := range m.mem {
+		if t.PhysicalAddress < m.Base {
+			continue
+		}
+		if t.PhysicalAddress >= m.Base+uint64(m.Size) {
+			continue
+		}
+		return int64(t.PhysicalAddress), nil
+	}
+
+	return -1, fmt.Errorf("%#x:valid not set:%w", vaddr, ErrBadVA)
 }
 
 // GetReg gets a pointer to a register in kvm.Regs, given

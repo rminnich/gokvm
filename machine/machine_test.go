@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -20,7 +22,7 @@ func testNewAndLoadLinux(t *testing.T, kernel, tap, guestIPv4, hostIPv4, prefixL
 		t.Skipf("Skipping test since we are not root")
 	}
 
-	m, err := machine.New("/dev/kvm", 1, 1<<29)
+	m, err := machine.New("/dev/kvm", 1, machine.DefaultMemRange)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +109,7 @@ func TestNewAndLoadLinuxWithVmlinux(t *testing.T) { // nolint:paralleltest
 func TestHalt(t *testing.T) {
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.DefaultMemRange)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -179,7 +181,7 @@ func TestHalt(t *testing.T) {
 func TestReadWriteAt(t *testing.T) {
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.DefaultMemRange)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -221,7 +223,7 @@ func TestReadWriteAt(t *testing.T) {
 func TestSingleStepOffOn(t *testing.T) {
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.DefaultMemRange)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -242,7 +244,7 @@ func TestSingleStepOffOn(t *testing.T) {
 func TestSetupGetSetRegs(t *testing.T) {
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.DefaultMemRange)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -297,7 +299,7 @@ func TestSetupGetSetRegs(t *testing.T) {
 func TestSingleStep(t *testing.T) {
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.DefaultMemRange)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -374,7 +376,7 @@ func TestSingleStep(t *testing.T) {
 func TestTranslate32(t *testing.T) {
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.DefaultMemRange)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -433,7 +435,7 @@ func TestTranslate32(t *testing.T) {
 func TestCPUtoFD(t *testing.T) {
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.DefaultMemRange)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -450,7 +452,7 @@ func TestCPUtoFD(t *testing.T) {
 func TestVtoP(t *testing.T) {
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.DefaultMemRange)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -475,7 +477,7 @@ func TestVtoP(t *testing.T) {
 func TestMemTooSmall(t *testing.T) {
 	t.Parallel()
 
-	if _, err := machine.New("/dev/kvm", 1, 1<<16); !errors.Is(err, machine.ErrMemTooSmall) {
+	if _, err := machine.New("/dev/kvm", 1, []string{"0@65536@/dev/zero"}); !errors.Is(err, machine.ErrMemTooSmall) {
 		t.Fatalf(`machine.New("/dev/kvm", 1,  1<<16): got nil, want %v`, machine.ErrMemTooSmall)
 	}
 }
@@ -533,5 +535,37 @@ func TestGetReg(t *testing.T) { // nolint:paralleltest
 
 	if _, err := machine.GetReg(r, x86asm.AL); err == nil {
 		t.Errorf("GetReg(r, x86asm.AL): got nil, want err")
+	}
+}
+
+func TestRange(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		test string
+		err  error
+		r    *machine.MemRange
+	}{
+		{name: "@", err: machine.ErrSyntax, r: nil},
+		{name: "@@", err: strconv.ErrSyntax, r: nil},
+		{name: "0@@", err: strconv.ErrSyntax, r: nil},
+		{name: "@0@", err: strconv.ErrSyntax, r: nil},
+		{name: "1@2@", err: nil, r: &machine.MemRange{Name: "", Base: 1, Size: 2}},
+		{name: "1@2@h", err: nil, r: &machine.MemRange{Name: "h", Base: 1, Size: 2}},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			r, err := machine.ParseMemRange(test.name)
+			if !errors.Is(err, test.err) {
+				t.Errorf("got %v, want %v", err, test.err)
+			}
+			if err != nil {
+				return
+			}
+			if !reflect.DeepEqual(r, test.r) {
+				t.Fatalf("got %v, want %v", r, test.r)
+			}
+		})
+
 	}
 }

@@ -18,8 +18,8 @@ type Config struct {
 	TapIfName  string
 	Disk       string
 	NCPUs      int
-	MemSize    int
 	TraceCount int
+	MemRanges  []string
 }
 
 // ParseSize parses a size string as number[gGmMkK]. The multiplier is optional,
@@ -73,7 +73,7 @@ func ParseArgs(args []string) (*Config, error) {
 
 	flag.IntVar(&c.NCPUs, "c", 1, "number of cpus")
 
-	msize := flag.String("m", "1G", "memory size: as number[gGmM], optional units, defaults to G")
+	msize := flag.String("m", "0@512m@/dev/zero", "memory ranges")
 	tc := flag.String("T", "0", "how many instructions to skip between trace prints -- 0 means tracing disabled")
 
 	flag.Parse()
@@ -83,13 +83,11 @@ func ParseArgs(args []string) (*Config, error) {
 		return nil, err
 	}
 
-	if c.MemSize, err = ParseSize(*msize, "g"); err != nil {
-		return nil, err
-	}
-
 	if c.TraceCount, err = ParseSize(*tc, ""); err != nil {
 		return nil, err
 	}
+
+	c.MemRanges = strings.Split(*msize, ",")
 
 	return c, nil
 }

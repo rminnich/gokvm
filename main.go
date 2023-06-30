@@ -30,7 +30,7 @@ func main() {
 		}
 	}
 
-	m, err := machine.New(c.Dev, c.NCPUs, c.MemSize)
+	m, err := machine.New(c.Dev, c.NCPUs, c.MemRanges)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
