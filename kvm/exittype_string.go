@@ -33,8 +33,9 @@ const _ExitType_name = "EXITUNKNOWNEXITEXCEPTIONEXITIOEXITHYPERCALLEXITDEBUGEXIT
 var _ExitType_index = [...]uint8{0, 11, 24, 30, 43, 52, 59, 67, 84, 96, 109, 117, 127, 140, 153, 166, 173, 180, 197}
 
 func (i ExitType) String() string {
-	if i >= ExitType(len(_ExitType_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_ExitType_index)-1 {
 		return "ExitType(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _ExitType_name[_ExitType_index[i]:_ExitType_index[i+1]]
+	return _ExitType_name[_ExitType_index[idx]:_ExitType_index[idx+1]]
 }
