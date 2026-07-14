@@ -7,12 +7,6 @@ import (
 	"github.com/bobuhiro11/gokvm/kvm"
 )
 
-func cpuid_low(arg1, arg2 uint32) (eax, ebx, ecx, edx uint32) // implemented in cpuid.s
-
-func CPUID(leaf uint32) (uint32, uint32, uint32, uint32) {
-	return cpuid_low(leaf, 0)
-}
-
 type CPUIDPatch struct {
 	Function uint32
 	Index    uint32
