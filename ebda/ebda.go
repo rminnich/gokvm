@@ -69,9 +69,12 @@ const (
 	// checksum sum to 0.
 	byteMask = 0xff
 
-	// mpBusIDISA is the (arbitrary but conventional) bus ID used for the
-	// single ISA bus this MP table describes.
-	mpBusIDISA = 0
+	// mpBusIDISA is the bus ID used for the single ISA bus this MP table
+	// describes. It must be distinct from mpBusIDPCI; unlike the PCI bus
+	// ID, its exact value doesn't need to match anything the kernel
+	// enumerates (ISA IRQ lookup only tests the bus's mp_bus_not_pci bit,
+	// not its numeric ID against a real bus number).
+	mpBusIDISA = 1
 
 	// mpIOAPICID is the (arbitrary but conventional) ID assigned to the
 	// single I/O APIC this MP table describes.
@@ -96,9 +99,12 @@ const (
 	// table identity-maps to I/O APIC pins 0-15.
 	numISAIRQs = 16
 
-	// mpBusIDPCI is the (arbitrary but conventional) bus ID used for the
-	// single PCI bus this MP table describes, distinct from mpBusIDISA.
-	mpBusIDPCI = 1
+	// mpBusIDPCI must be 0: the kernel's PCI legacy IRQ routing
+	// (IO_APIC_get_PCI_irq_vector) matches an I/O interrupt assignment
+	// entry's srcBusID directly against pci_dev->bus->number, which is 0
+	// for our single root PCI bus. Any other value silently fails to
+	// match, even though the entry parses fine at boot.
+	mpBusIDPCI = 0
 
 	// pciNetSlot/pciBlkSlot are the PCI device (slot) numbers assigned
 	// to the virtio-net and virtio-blk devices. These must match the
