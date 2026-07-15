@@ -31,7 +31,7 @@ func parseBootArgs(args []string) (*BootArgs, error) {
 	bootCmd.StringVar(&c.Initrd, "i", "", "initrd path")
 	//  refs: commit 1621292e73770aabbc146e72036de5e26f901e86 in kvmtool
 	bootCmd.StringVar(&c.Params, "p", `console=ttyS0 earlyprintk=serial `+
-		`noapic noacpi notsc nowatchdog `+
+		`noacpi notsc nowatchdog `+
 		`nmi_watchdog=0 debug apic=debug show_lapic=all mitigations=off `+
 		`lapic tsc_early_khz=2000 `+
 		`dyndbg="file arch/x86/kernel/smpboot.c +plf ; file drivers/net/virtio_net.c +plf" `+

@@ -20,6 +20,13 @@ const (
 	// https://github.com/kvmtool/kvmtool/blob/415f92c33a227c02f6719d4594af6fad10f07abf/include/kvm/apic.h#L9
 	apicBaseAddrStep = 0x00400000
 
+	// ioAPICPhysBase is KVM's fixed in-kernel I/O APIC MMIO base address
+	// (IOAPIC_DEFAULT_BASE_ADDRESS in arch/x86/kvm/ioapic.h), the same
+	// default used by real PC hardware and by QEMU. It is not
+	// configurable via any KVM ioctl, so we must advertise this exact
+	// value in the MP table for the guest to find it.
+	ioAPICPhysBase = 0xfec00000
+
 	// topByteShift/thirdByteShift/secondByteShift position the first
 	// three characters of a 4-byte, big-endian-style ASCII signature
 	// (see mpfIntelSignature/mpcTableSignature below) within a uint32.
@@ -32,7 +39,10 @@ const (
 
 	// see Table 4-3. Base MP Configuration Table Entry Types in Intel MP Configuration
 	// https://pdos.csail.mit.edu/6.828/2014/readings/ia32/MPspec.pdf
-	mpEntryTypeProcessor = 0
+	mpEntryTypeProcessor         = 0
+	mpEntryTypeBus               = 1
+	mpEntryTypeIOAPIC            = 2
+	mpEntryTypeIOInterruptAssign = 3
 
 	// see Table 4-4. Processor Entry Fields in Intel MP Configuration
 	// https://pdos.csail.mit.edu/6.828/2014/readings/ia32/MPspec.pdf
@@ -58,6 +68,33 @@ const (
 	// to compute the one's-complement byte needed to make an MP table
 	// checksum sum to 0.
 	byteMask = 0xff
+
+	// mpBusIDISA is the (arbitrary but conventional) bus ID used for the
+	// single ISA bus this MP table describes.
+	mpBusIDISA = 0
+
+	// mpIOAPICID is the (arbitrary but conventional) ID assigned to the
+	// single I/O APIC this MP table describes.
+	mpIOAPICID = 2
+
+	// mpIOAPICVersion is the I/O APIC version register value for a
+	// standard 82093AA-compatible I/O APIC (matches KVM's emulated one).
+	mpIOAPICVersion = 0x11
+
+	// mpIOAPICFlagEnable marks the I/O APIC entry as enabled.
+	mpIOAPICFlagEnable = 1
+
+	// mpIntTypeINT is a standard vectored interrupt (as opposed to NMI,
+	// SMI, or ExtINT) in an I/O/Local Interrupt Assignment entry.
+	mpIntTypeINT = 0
+
+	// mpIntFlagBusDefault means "use the bus's default polarity/trigger
+	// mode" (edge-triggered, active-high, for the ISA bus).
+	mpIntFlagBusDefault = 0
+
+	// numISAIRQs is the number of legacy ISA IRQ lines (0-15) this MP
+	// table identity-maps to I/O APIC pins 0-15.
+	numISAIRQs = 16
 )
 
 var errorVCPUNumExceed = fmt.Errorf("the number of vCPUs must be less than or equal to %d", maxVCPUs)
@@ -116,7 +153,42 @@ type (
 		lapic     uint32 // Local APIC addresss must be set.
 		_         uint32 // reserved
 
-		mpcCPU [maxVCPUs]mpcCPU
+		mpcCPU         [maxVCPUs]mpcCPU
+		mpcBus         mpcBus
+		mpcIOAPIC      mpcIOAPIC
+		mpcIOInterrupt [numISAIRQs]mpcIOInterrupt
+	}
+
+	// MP Bus Entry (type 1): identifies one system bus (here, the
+	// single ISA bus every I/O interrupt assignment below refers to).
+	// See Table 4-5 in the Intel MP Configuration spec.
+	mpcBus struct {
+		typ     uint8
+		busID   uint8
+		busType [6]uint8 // ASCII bus type string, e.g. "ISA   "
+	}
+
+	// MP I/O APIC Entry (type 2): describes one I/O APIC. See Table 4-6
+	// in the Intel MP Configuration spec.
+	mpcIOAPIC struct {
+		typ      uint8
+		apicID   uint8
+		apicVer  uint8
+		flags    uint8
+		apicAddr uint32
+	}
+
+	// MP I/O Interrupt Assignment Entry (type 3): routes one source bus
+	// IRQ line to one I/O APIC input pin. See Table 4-7 in the Intel MP
+	// Configuration spec.
+	mpcIOInterrupt struct {
+		typ        uint8
+		intType    uint8
+		flags      uint16
+		srcBusID   uint8
+		srcBusIRQ  uint8
+		dstAPICID  uint8
+		dstAPICINT uint8
 	}
 )
 
@@ -198,6 +270,50 @@ func apicAddr(apic uint32) uint32 {
 	return apicDefaultPhysBase + apic*apicBaseAddrStep
 }
 
+// newMPCBus returns the single ISA bus entry every I/O interrupt
+// assignment below refers to as its source bus.
+func newMPCBus() mpcBus {
+	return mpcBus{
+		typ:     mpEntryTypeBus,
+		busID:   mpBusIDISA,
+		busType: [6]uint8{'I', 'S', 'A', ' ', ' ', ' '},
+	}
+}
+
+// newMPCIOAPIC returns the single I/O APIC entry, describing KVM's
+// fixed in-kernel I/O APIC.
+func newMPCIOAPIC() mpcIOAPIC {
+	return mpcIOAPIC{
+		typ:      mpEntryTypeIOAPIC,
+		apicID:   mpIOAPICID,
+		apicVer:  mpIOAPICVersion,
+		flags:    mpIOAPICFlagEnable,
+		apicAddr: ioAPICPhysBase,
+	}
+}
+
+// newMPCIOInterrupts returns one I/O Interrupt Assignment entry per
+// legacy ISA IRQ line (0-15), identity-mapping each to the same-numbered
+// I/O APIC input pin, using the bus's default (edge, active-high)
+// polarity and trigger mode.
+func newMPCIOInterrupts() [numISAIRQs]mpcIOInterrupt {
+	var entries [numISAIRQs]mpcIOInterrupt
+
+	for irq := range numISAIRQs {
+		entries[irq] = mpcIOInterrupt{
+			typ:        mpEntryTypeIOInterruptAssign,
+			intType:    mpIntTypeINT,
+			flags:      mpIntFlagBusDefault,
+			srcBusID:   mpBusIDISA,
+			srcBusIRQ:  u8FromInt(irq),
+			dstAPICID:  mpIOAPICID,
+			dstAPICINT: u8FromInt(irq),
+		}
+	}
+
+	return entries
+}
+
 func newMPCTable(nCPUs int) (*mpcTable, error) {
 	m := &mpcTable{}
 	m.signature = mpcTableSignature
@@ -205,7 +321,10 @@ func newMPCTable(nCPUs int) (*mpcTable, error) {
 	m.spec = 4
 	m.lapic = apicAddr(0)
 	m.OEMId = [8]byte{0x47, 0x4F, 0x4B, 0x56, 0x4D, 0x00, 0x00, 0x00} // "GOKVM   "
-	m.oemCount = maxVCPUs                                             // This must be the number of entries
+	// This must be the number of entries: maxVCPUs processor entries
+	// (unused slots are zeroed/disabled), plus 1 bus, 1 I/O APIC, and
+	// numISAIRQs I/O interrupt assignment entries.
+	m.oemCount = maxVCPUs + 1 + 1 + numISAIRQs
 
 	if nCPUs > maxVCPUs {
 		return nil, errorVCPUNumExceed
@@ -216,6 +335,10 @@ func newMPCTable(nCPUs int) (*mpcTable, error) {
 	for i := range nCPUs {
 		m.mpcCPU[i] = *newMPCCpu(i)
 	}
+
+	m.mpcBus = newMPCBus()
+	m.mpcIOAPIC = newMPCIOAPIC()
+	m.mpcIOInterrupt = newMPCIOInterrupts()
 
 	m.checkSum, err = m.calcCheckSum()
 	if err != nil {

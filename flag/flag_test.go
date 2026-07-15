@@ -129,7 +129,7 @@ func TestParseBootArgsWithDefaults(t *testing.T) {
 	}
 
 	if c.Params != `console=ttyS0 earlyprintk=serial `+
-		`noapic noacpi notsc nowatchdog `+
+		`noacpi notsc nowatchdog `+
 		`nmi_watchdog=0 debug apic=debug show_lapic=all mitigations=off `+
 		`lapic tsc_early_khz=2000 `+
 		`dyndbg="file arch/x86/kernel/smpboot.c +plf ; file drivers/net/virtio_net.c +plf" `+
