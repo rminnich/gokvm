@@ -110,10 +110,11 @@ func TestGdtEntry(t *testing.T) {
 			},
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			res := pvh.GdtEntry(tt.flag, tt.base, tt.limit)
+
 			if tt.expEntry != res {
 				t.Fatalf("Test %s failed: got: 0x%x, exp: 0x%x", tt.name, res, tt.expEntry)
 			}
@@ -121,6 +122,7 @@ func TestGdtEntry(t *testing.T) {
 
 		t.Run(tt.name, func(t *testing.T) {
 			seg := pvh.SegmentFromGDT(tt.expEntry, tt.tableIndex)
+
 			var buf, expbuf bytes.Buffer
 
 			if err := binary.Write(&buf, binary.LittleEndian, seg); err != nil {

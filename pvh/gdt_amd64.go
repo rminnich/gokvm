@@ -2,50 +2,117 @@ package pvh
 
 import "github.com/bobuhiro11/gokvm/kvm"
 
-// For GDT details see arch/x86/include/asm/segment.h
+// For GDT details see arch/x86/include/asm/segment.h and the Intel
+// SDM's description of the 64-bit segment descriptor format.
+//
+// Bit layout of a segment descriptor (bit 0 is the LSB):
+//
+//	 0-15: limit[0:15]
+//	16-39: base[0:23]
+//	40-43: type (4 bits)
+//	   44: S
+//	45-46: DPL (2 bits)
+//	   47: P
+//	48-51: limit[16:19]
+//	   52: AVL
+//	   53: L
+//	   54: DB
+//	   55: G
+//	56-63: base[24:31]
+const (
+	gdtLimitLoBits = 16 // width of limit[0:15]
+	gdtBaseLoBits  = 24 // width of base[0:23]
+
+	gdtTypeShift    = 40
+	gdtSShift       = 44
+	gdtDPLShift     = 45
+	gdtPShift       = 47
+	gdtLimitHiShift = 48
+	gdtAVLShift     = 52
+	gdtLShift       = 53
+	gdtDBShift      = 54
+	gdtGShift       = 55
+	gdtBaseHiShift  = 56
+
+	gdtFlagMask = 0x1 // width of single-bit fields: G, DB, L, AVL, P, S
+	gdtDPLMask  = 0x3
+	gdtTypeMask = 0xF
+
+	gdtLimitLoMask = 0x0000FFFF
+	gdtLimitHiMask = 0x000F0000
+	gdtBaseLoMask  = 0x00FFFFFF
+	gdtBaseHiMask  = 0xFF000000
+	gdtFlagsMask   = 0x0000F0FF
+
+	// gdtGranularityShift is how much a limit is scaled by when the G
+	// (granularity) flag is set (4 KiB pages).
+	gdtGranularityShift = 12
+
+	// gdtSelectorStride is the size, in bytes, of one GDT entry, used to
+	// convert a table index into a segment selector.
+	gdtSelectorStride = 8
+)
+
+// u8 truncates v to its low 8 bits. Used for single-byte GDT
+// descriptor fields (type, DPL, and the single-bit flags), which are
+// always small by construction (masked to their field width below).
+func u8(v uint64) uint8 {
+	return uint8(v) //nolint:gosec // masked to the field's bit width above
+}
+
+// u32 truncates v to its low 32 bits. Used for the reconstructed
+// 20-bit segment limit below, which always fits well within 32 bits.
+func u32(v uint64) uint32 {
+	return uint32(v) //nolint:gosec // masked to 20 bits, see getLimit
+}
 
 func GdtEntry(flags uint16, base uint32, limit uint32) uint64 {
-	return (uint64(base)&0xFF000000)<<(56-24) |
-		(uint64(flags)&0x0000F0FF)<<40 |
-		(uint64(limit)&0x000F0000)<<(48-16) |
-		(uint64(base)&0x00FFFFFF)<<16 |
-		(uint64(limit) & 0x0000FFFF)
+	return (uint64(base)&gdtBaseHiMask)<<(gdtBaseHiShift-gdtBaseLoBits) |
+		(uint64(flags)&gdtFlagsMask)<<gdtTypeShift |
+		(uint64(limit)&gdtLimitHiMask)<<(gdtLimitHiShift-gdtLimitLoBits) |
+		(uint64(base)&gdtBaseLoMask)<<gdtLimitLoBits |
+		(uint64(limit) & gdtLimitLoMask)
 }
 
 func getBase(entry uint64) uint64 {
-	return ((entry & 0xFF00000000000000) >> 32) | ((entry & 0x000000FF00000000) >> 16) | (entry&0x00000000FFFF0000)>>16
+	// baseHiShift undoes the (gdtBaseHiShift-gdtBaseLoBits) shift
+	// GdtEntry applies when encoding the high byte of base.
+	const baseHiShift = gdtBaseHiShift - gdtBaseLoBits
+
+	return ((entry & (uint64(gdtBaseHiMask) << baseHiShift)) >> baseHiShift) |
+		((entry & (uint64(gdtBaseLoMask) << gdtLimitLoBits)) >> gdtLimitLoBits)
 }
 
 func getG(entry uint64) uint8 {
-	return uint8((entry & 0x0080000000000000) >> 55)
+	return u8((entry >> gdtGShift) & gdtFlagMask)
 }
 
 func getDB(entry uint64) uint8 {
-	return uint8((entry & 0x0040000000000000) >> 54)
+	return u8((entry >> gdtDBShift) & gdtFlagMask)
 }
 
 func getL(entry uint64) uint8 {
-	return uint8((entry & 0x0020000000000000) >> 53)
+	return u8((entry >> gdtLShift) & gdtFlagMask)
 }
 
 func getAVL(entry uint64) uint8 {
-	return uint8((entry & 0x0010000000000000) >> 52)
+	return u8((entry >> gdtAVLShift) & gdtFlagMask)
 }
 
 func getP(entry uint64) uint8 {
-	return uint8((entry & 0x0000800000000000) >> 47)
+	return u8((entry >> gdtPShift) & gdtFlagMask)
 }
 
 func getDPL(entry uint64) uint8 {
-	return uint8((entry & 0x0000600000000000) >> 45)
+	return u8((entry >> gdtDPLShift) & gdtDPLMask)
 }
 
 func getS(entry uint64) uint8 {
-	return uint8((entry & 0x0000100000000000) >> 44)
+	return u8((entry >> gdtSShift) & gdtFlagMask)
 }
 
 func getType(entry uint64) uint8 {
-	return uint8((entry & 0x00000F0000000000) >> 40)
+	return u8((entry >> gdtTypeShift) & gdtTypeMask)
 }
 
 // Extract the segment limit from the GDT segment descriptor.
@@ -68,14 +135,18 @@ func getType(entry uint64) uint8 {
 // for the case of direct boot to 64-bit (long) mode, since in 64-bit mode the processor does not
 // perform runtime limit checking on code or data segments.
 func getLimit(entry uint64) uint32 {
-	l := uint32(((((entry) & 0x000F000000000000) >> 32) | ((entry) & 0x000000000000FFFF)))
+	// limitHiShift undoes the (gdtLimitHiShift-gdtLimitLoBits) shift
+	// GdtEntry applies when encoding the high nibble of limit.
+	const limitHiShift = gdtLimitHiShift - gdtLimitLoBits
+
+	l := u32(((entry & (uint64(gdtLimitHiMask) << limitHiShift)) >> limitHiShift) | (entry & gdtLimitLoMask))
 	g := getG(entry)
 
 	switch g {
 	case 0:
 		return l
 	default:
-		return (l << 12) | 0xFFFF
+		return (l << gdtGranularityShift) | gdtLimitLoMask
 	}
 }
 
@@ -94,7 +165,7 @@ func SegmentFromGDT(entry uint64, tableIndex uint8) kvm.Segment {
 	return kvm.Segment{
 		Base:     getBase(entry),
 		Limit:    getLimit(entry),
-		Selector: uint16(tableIndex) * 8,
+		Selector: uint16(tableIndex) * gdtSelectorStride,
 		Typ:      getType(entry),
 		Present:  getP(entry),
 		DPL:      getDPL(entry),

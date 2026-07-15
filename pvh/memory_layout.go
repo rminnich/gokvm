@@ -63,8 +63,10 @@ const (
 	PCIMMIOConfigSizePerSegment = 4096 * 256
 
 	// TSS is 3 page after PCI MMConfig space.
+	numTSSPages = 3
+	pageSizeKB  = 4
 	KVMTSSStart = PCIMMConfigStart + PCIMMConfigSize
-	KVMTSSSize  = (3 * 4) << 10
+	KVMTSSSize  = (numTSSPages * pageSizeKB) << 10
 
 	// Identity map is one page region after TSS.
 	KVMIdentityMapStart = KVMTSSStart + KVMTSSSize

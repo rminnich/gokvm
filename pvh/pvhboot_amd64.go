@@ -15,6 +15,10 @@ const (
 	xenELFNotePhys32Entry uint32 = 18
 	pvhNoteStrSz          uint32 = 4
 	elfNoteSize                  = 12
+
+	// elfNoteFieldSize is the size, in bytes, of each of the three
+	// fixed-width fields (namesz, descsz, type) in an ELF note header.
+	elfNoteFieldSize = 4
 )
 
 var (
@@ -59,7 +63,7 @@ func (h *HVMStartInfo) Bytes() ([]byte, error) {
 		h.RSDPPAddr,
 		h.MemMapPAddr,
 		h.MemMapEntries,
-		uint32(0x0),
+		uint32(0),
 	} {
 		if err := binary.Write(&buf, binary.LittleEndian, item); err != nil {
 			return nil, err
@@ -91,7 +95,7 @@ func (h *HVMModListEntry) Bytes() ([]byte, error) {
 		h.Addr,
 		h.Size,
 		h.CmdLineAddr,
-		uint64(0x0),
+		uint64(0),
 	} {
 		if err := binary.Write(&buf, binary.LittleEndian, item); err != nil {
 			return nil, err
@@ -123,7 +127,7 @@ func (h *HVMMemMapTableEntry) Bytes() ([]byte, error) {
 		h.Addr,
 		h.Size,
 		h.Type,
-		uint32(0x0),
+		uint32(0),
 	} {
 		if err := binary.Write(&buf, binary.LittleEndian, item); err != nil {
 			return nil, err
@@ -135,31 +139,58 @@ func (h *HVMMemMapTableEntry) Bytes() ([]byte, error) {
 
 type GDT [4]uint64
 
+// GDT entry access-byte flags for the fixed code/data/TSS segments
+// CreateGDT builds (see the Intel SDM's segment descriptor format).
+const (
+	codeSegFlags = 0xc09b
+	dataSegFlags = 0xc093
+	tssSegFlags  = 0x008b
+	tssSegLimit  = 0x67
+
+	// codeDataSegLimit is the 32-bit (4 GiB, with G=1) limit given to
+	// the code and data segments.
+	codeDataSegLimit = 0xffffffff
+
+	// GDT table indices for the code/data/TSS segments below.
+	codeSegIndex = 1
+	dataSegIndex = 2
+	tssSegIndex  = 3
+
+	// idtLimit is the (placeholder) IDT limit InitSRegs sets.
+	idtLimit = 8
+
+	// EFLAGS-style bit positions cleared in EFER below (VM=virtual-8086
+	// mode, IF=interrupt enable, TF=trap/single-step).
+	vmBit = 17
+	ifBit = 9
+	tfBit = 8
+)
+
 func CreateGDT() GDT {
 	var gdtTable GDT
 
-	gdtTable[0] = GdtEntry(0, 0, 0)               // NULL
-	gdtTable[1] = GdtEntry(0xc09b, 0, 0xffffffff) // Code
-	gdtTable[2] = GdtEntry(0xc093, 0, 0xffffffff) // DATA
-	gdtTable[3] = GdtEntry(0x008b, 0, 0x67)       // TSS
+	gdtTable[0] = GdtEntry(0, 0, 0)                                      // NULL
+	gdtTable[codeSegIndex] = GdtEntry(codeSegFlags, 0, codeDataSegLimit) // Code
+	gdtTable[dataSegIndex] = GdtEntry(dataSegFlags, 0, codeDataSegLimit) // DATA
+	gdtTable[tssSegIndex] = GdtEntry(tssSegFlags, 0, tssSegLimit)        // TSS
 
 	return gdtTable
 }
 
 func InitSRegs(vcpuFd uintptr, gdttable GDT) error {
-	codeseg := SegmentFromGDT(gdttable[1], 1)
-	dataseg := SegmentFromGDT(gdttable[2], 2)
-	tssseg := SegmentFromGDT(gdttable[3], 3)
+	codeseg := SegmentFromGDT(gdttable[codeSegIndex], codeSegIndex)
+	dataseg := SegmentFromGDT(gdttable[dataSegIndex], dataSegIndex)
+	tssseg := SegmentFromGDT(gdttable[tssSegIndex], tssSegIndex)
 
 	// We need to write this to ....maybe create this config earlier.
 	gdt := kvm.Descriptor{
 		Base:  BootGDTStart,
-		Limit: uint16(len(gdttable)*8) - 1, // 4 entries of 64bit (8byte) per entry
+		Limit: uint16(len(gdttable)*gdtSelectorStride) - 1, // 4 entries of 64bit (8byte) per entry
 	}
 
 	idt := kvm.Descriptor{
 		Base:  BootIDTStart,
-		Limit: 8,
+		Limit: idtLimit,
 	}
 
 	sregs, err := kvm.GetSregs(vcpuFd)
@@ -178,7 +209,7 @@ func InitSRegs(vcpuFd uintptr, gdttable GDT) error {
 	sregs.SS = dataseg
 	sregs.TR = tssseg
 
-	sregs.EFER |= (0 << 17) | (0 << 9) | (0 << 8) // VM=0, IF=0, TF=0
+	sregs.EFER |= (0 << vmBit) | (0 << ifBit) | (0 << tfBit) // VM=0, IF=0, TF=0
 
 	sregs.CR0 = 0x1
 	sregs.CR4 = 0x0
@@ -215,25 +246,43 @@ type elfNote struct {
 	Type     uint32
 }
 
+// toI64 widens a uint64 ELF file offset/size (always well below 2^63
+// for any realistic kernel image) to int64.
+func toI64(v uint64) int64 {
+	return int64(v) //nolint:gosec // v is an ELF file offset/size, always < 2^63
+}
+
+// iToI64 widens a non-negative int (a byte count or accumulated read
+// size, always small) to int64.
+func iToI64(v int) int64 {
+	return int64(v) //nolint:gosec // v is a small, non-negative byte count
+}
+
+// toInt narrows a uint64 ELF program-header field (always small for a
+// realistic kernel image) to int.
+func toInt(v uint64) int {
+	return int(v) //nolint:gosec // v is a small ELF size field
+}
+
 func ParsePVHEntry(fwimg io.ReaderAt, phdr *elf.Prog) (uint32, error) {
 	node := elfNote{}
-	off := int64(phdr.Off)
+	off := toI64(phdr.Off)
 	readSize := 0
 
-	for readSize < int(phdr.Filesz) {
-		nodeByte := make([]byte, 12)
+	for readSize < toInt(phdr.Filesz) {
+		nodeByte := make([]byte, elfNoteSize)
 
 		n, err := fwimg.ReadAt(nodeByte, off)
 		if err != nil {
-			return 0x0, err
+			return 0, err
 		}
 
 		readSize += n
-		off += int64(n)
+		off += iToI64(n)
 
-		nsb := make([]byte, 4)
-		dsb := make([]byte, 4)
-		tsb := make([]byte, 4)
+		nsb := make([]byte, elfNoteFieldSize)
+		dsb := make([]byte, elfNoteFieldSize)
+		tsb := make([]byte, elfNoteFieldSize)
 
 		copy(nsb, nodeByte[:3])
 		copy(dsb, nodeByte[4:7])
@@ -248,10 +297,10 @@ func ParsePVHEntry(fwimg io.ReaderAt, phdr *elf.Prog) (uint32, error) {
 
 			n, err := fwimg.ReadAt(buf, off)
 			if err != nil {
-				return 0x0, err
+				return 0, err
 			}
 
-			off += int64(n)
+			off += iToI64(n)
 			// Check the String
 			if bytes.Equal(buf, []byte{'X', 'e', 'n', '\000'}) {
 				break
@@ -260,35 +309,35 @@ func ParsePVHEntry(fwimg io.ReaderAt, phdr *elf.Prog) (uint32, error) {
 
 		nameAlign, err := alignUp(uint64(node.NameSize))
 		if err != nil {
-			return 0x0, err
+			return 0, err
 		}
 
 		descAlign, err := alignUp(uint64(node.DescSize))
 		if err != nil {
-			return 0x0, err
+			return 0, err
 		}
 
-		readSize += int(nameAlign)
-		readSize += int(descAlign)
-		off = int64(phdr.Off) + int64(readSize)
+		readSize += toInt(nameAlign)
+		readSize += toInt(descAlign)
+		off = toI64(phdr.Off) + iToI64(readSize)
 	}
 
-	if readSize >= int(phdr.Filesz) {
+	if readSize >= toInt(phdr.Filesz) {
 		// No PVH entry found. Return
-		return 0x0, errPVHEntryNotFound
+		return 0, errPVHEntryNotFound
 	}
 
 	// off is the value we need to add aligned namesize - PVH_NOTE_STR_SZ
 	nameAlign, err := alignUp(uint64(node.NameSize))
 	if err != nil {
-		return 0x0, err
+		return 0, err
 	}
 
-	off += (int64(nameAlign) - int64(pvhNoteStrSz))
-	pvhAddrByte := make([]byte, 4) // address is 4 byte/32-bit
+	off += toI64(nameAlign) - toI64(uint64(pvhNoteStrSz))
+	pvhAddrByte := make([]byte, elfNoteFieldSize) // address is 4 byte/32-bit
 
 	if _, err := fwimg.ReadAt(pvhAddrByte, off); err != nil {
-		return 0x0, err
+		return 0, err
 	}
 
 	retAddr := binary.LittleEndian.Uint32(pvhAddrByte)
@@ -297,7 +346,7 @@ func ParsePVHEntry(fwimg io.ReaderAt, phdr *elf.Prog) (uint32, error) {
 }
 
 func alignUp(addr uint64) (uint64, error) {
-	align := uint64(4)
+	align := uint64(elfNoteFieldSize)
 	if !isPowerOf2(align) {
 		return addr, errAlign
 	}
@@ -328,10 +377,10 @@ func CheckPVH(kern io.ReaderAt) (bool, error) {
 
 	for _, prog := range elfkern.Progs {
 		note := elfNote{}
-		off := int64(prog.Off)
+		off := toI64(prog.Off)
 		readSize := 0
 
-		for readSize < int(prog.Filesz) {
+		for readSize < toInt(prog.Filesz) {
 			noteByte := make([]byte, elfNoteSize)
 
 			n, err := kern.ReadAt(noteByte, off)
@@ -340,11 +389,11 @@ func CheckPVH(kern io.ReaderAt) (bool, error) {
 			}
 
 			readSize += n
-			off += int64(n)
+			off += iToI64(n)
 
-			nsb := make([]byte, 4)
-			dsb := make([]byte, 4)
-			tsb := make([]byte, 4)
+			nsb := make([]byte, elfNoteFieldSize)
+			dsb := make([]byte, elfNoteFieldSize)
+			tsb := make([]byte, elfNoteFieldSize)
 
 			copy(nsb, noteByte[:3])
 			copy(dsb, noteByte[4:7])
@@ -377,9 +426,9 @@ func CheckPVH(kern io.ReaderAt) (bool, error) {
 				return false, err
 			}
 
-			readSize += int(nameAlign)
-			readSize += int(descAlign)
-			off = int64(prog.Off) + int64(readSize)
+			readSize += toInt(nameAlign)
+			readSize += toInt(descAlign)
+			off = toI64(prog.Off) + iToI64(readSize)
 		}
 	}
 
