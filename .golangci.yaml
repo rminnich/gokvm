@@ -1,31 +1,38 @@
 # N.B. the golangci-lint recommends you not enable --enable-all (which begs the
 # question of why it's there in the first place) as upgrades to golangci-lint
 # can break your CI!
+#
+# Do not list already-deprecated/archived linters (e.g. execinquery,
+# maligned, ifshort, exhaustivestruct, golint, scopelint, interfacer,
+# nosnakecase, gomnd) in "disable" below: golangci-lint force-deactivates
+# them on its own once they reach deprecation step 2, and explicitly
+# disabling them just produces "should be removed from the list of
+# disabled linters" warnings. The Makefile pins an exact golangci-lint
+# version (see golangci-lint-tool) precisely so this list stays accurate
+# across machines instead of drifting with whatever version happens to
+# be installed.
 linters:
   enable-all: true
   disable:
-    - gomnd
     - wrapcheck
-    - maligned
     - forbidigo
     - funlen
     - gocognit
-    - ifshort
     - varnamelen
     - nonamedreturns
     - cyclop
     - errname
-    - exhaustivestruct
     - exhaustruct
     - forcetypeassert
     - wastedassign
     - ireturn
     - revive
-    - golint
-    - scopelint
-    - interfacer
     - dupl
     - depguard
     - nolintlint
-    - nosnakecase
     - tagalign
+    # tenv is deprecated in favor of usetesting (which we keep enabled);
+    # unlike the already-deprecated linters noted above, golangci-lint
+    # doesn't force-deactivate tenv itself, so it must be disabled here
+    # to silence its "is deprecated" warning.
+    - tenv

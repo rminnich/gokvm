@@ -1,17 +1,36 @@
 export GOPATH := $(shell go env GOPATH)
 export PATH := $(GOPATH)/bin:$(PATH)
 
+# GOLANGCI_LINT_VERSION is the pinned golangci-lint release (see the
+# golangci-lint-tool target below for why it's pinned). Bump it
+# deliberately, and re-check .golangci.yaml's disable list against
+# https://golangci-lint.run/product/roadmap/#linter-deprecation-cycle
+# when you do.
+GOLANGCI_LINT_VERSION := v1.64.8
+
 $(GOPATH)/bin/stringer:
 	go install golang.org/x/tools/cmd/stringer@latest
 
-$(GOPATH)/bin/golangci-lint:
-	# golangci-lint's own go.mod pins an older toolchain via a
-	# "toolchain" directive; GOTOOLCHAIN=go1.26.0 forces `go install` to
-	# build it with the same Go version this project requires (see
-	# go.mod), since golangci-lint refuses to run against a project
-	# whose "go" directive is newer than the Go version it was built
-	# with.
-	GOTOOLCHAIN=go1.26.0 go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+# golangci-lint-tool installs the pinned golangci-lint version if it
+# isn't already installed at that exact version. Unlike a plain file
+# rule on $(GOPATH)/bin/golangci-lint, this re-installs whenever a
+# *different* version is already present (e.g. a stale binary from a
+# previous @latest install, or one installed manually/by another tool),
+# so `make golangci` behaves identically on every machine instead of
+# silently reusing whatever happened to already be on PATH.
+#
+# golangci-lint's own go.mod pins an older toolchain via a "toolchain"
+# directive; GOTOOLCHAIN=go1.26.0 forces `go install` to build it with
+# the same Go version this project requires (see go.mod), since
+# golangci-lint refuses to run against a project whose "go" directive
+# is newer than the Go version it was built with.
+.PHONY: golangci-lint-tool
+golangci-lint-tool:
+	@installed=$$($(GOPATH)/bin/golangci-lint version 2>/dev/null | sed -n 's/.*version \(v[0-9][0-9.]*\).*/\1/p'); \
+	if [ "$$installed" != "$(GOLANGCI_LINT_VERSION)" ]; then \
+		echo "installing golangci-lint $(GOLANGCI_LINT_VERSION) (found: $${installed:-none})"; \
+		GOTOOLCHAIN=go1.26.0 go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
+	fi
 
 $(GOPATH)/src/github.com/u-root/u-root:
 	git clone --depth=1 --branch v0.13.1 \
@@ -92,7 +111,7 @@ generate: $(GOPATH)/bin/stringer
 	go generate ./...
 
 .PHONY: golangci
-golangci: $(GOPATH)/bin/golangci-lint
+golangci: golangci-lint-tool
 	$(MAKE) generate
 	GOOS=linux GOARCH=amd64 golangci-lint run ./...
 	GOOS=linux GOARCH=arm64 golangci-lint run ./...
