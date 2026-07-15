@@ -79,13 +79,11 @@ func (v *VMM) Boot() error {
 
 	g := new(errgroup.Group)
 
-	for cpu := 0; cpu < v.NCPUs; cpu++ {
+	for cpu := range v.NCPUs {
 		fmt.Printf("Start CPU %d of %d\r\n", cpu, v.NCPUs)
 
-		i := cpu
-
 		f := func() error {
-			return v.VCPU(os.Stderr, i, v.TraceCount)
+			return v.VCPU(os.Stderr, cpu, v.TraceCount)
 		}
 
 		g.Go(f)

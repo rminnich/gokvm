@@ -57,13 +57,11 @@ func (v *VMM) Setup() error {
 func (v *VMM) Boot() error {
 	g := new(errgroup.Group)
 
-	for cpu := 0; cpu < v.NCPUs; cpu++ {
-		i := cpu
-
-		fmt.Printf("Start CPU %d of %d\r\n", i, v.NCPUs)
+	for cpu := range v.NCPUs {
+		fmt.Printf("Start CPU %d of %d\r\n", cpu, v.NCPUs)
 
 		g.Go(func() error {
-			return v.RunInfiniteLoop(i)
+			return v.RunInfiniteLoop(cpu)
 		})
 	}
 
