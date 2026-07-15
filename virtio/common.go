@@ -7,6 +7,22 @@ const (
 	//
 	// refs https://github.com/torvalds/linux/blob/5859a2b/drivers/net/virtio_net.c#L1754
 	QueueSize = 32
+
+	// pageSize is the guest page size used to align the virtqueue PFN.
+	pageSize = 4096
+
+	// virtioVendorID is the PCI vendor ID used by legacy virtio devices.
+	virtioVendorID = 0x1AF4
+
+	// Legacy virtio-pci IO-port register offsets (see commonHeader
+	// below and https://wiki.osdev.org/Virtio#Legacy_Interface).
+	regQueuePFN    = 8
+	regQueueSelect = 14
+	regQueueNotify = 16
+	regISR         = 19
+
+	// isrClear is the cleared (no interrupt pending) ISR status value.
+	isrClear = 0x0
 )
 
 type IRQInjector interface {
@@ -42,7 +58,7 @@ type VirtQueue struct {
 	}
 
 	// padding for 4096 byte alignment
-	_ [4096 - ((16*QueueSize + 6 + 2*QueueSize) % 4096)]uint8
+	_ [pageSize - ((16*QueueSize + 6 + 2*QueueSize) % pageSize)]uint8
 
 	UsedRing struct {
 		Flags uint16
@@ -53,4 +69,40 @@ type VirtQueue struct {
 		}
 		availEvent uint16
 	}
+}
+
+// The helpers below centralize narrowing/widening integer conversions
+// that are safe by construction in this package (IO-port offsets are
+// always small, guest-supplied PFN/queue-index values fit their
+// target width, and disk offsets/sizes never approach the signed/
+// unsigned boundary for any realistic disk image), so that gosec's
+// G115 (integer overflow conversion) is addressed in one place rather
+// than with a nolint comment at every call site.
+
+// toInt narrows a uint64 IO-port-relative offset to int.
+func toInt(v uint64) int {
+	return int(v) //nolint:gosec // v is always a small IO-port offset
+}
+
+// u16 narrows a uint64 guest-supplied value (e.g. a virtqueue select
+// index) to uint16.
+func u16(v uint64) uint16 {
+	return uint16(v) //nolint:gosec // v is always a small queue index
+}
+
+// u32 narrows a uint64 guest-physical page-frame-number-derived
+// address to uint32.
+func u32(v uint64) uint32 {
+	return uint32(v) //nolint:gosec // v is a PFN*pageSize address within guest memory
+}
+
+// i64 widens a uint64 byte offset/size (always well below 2^63) to int64.
+func i64(v uint64) int64 {
+	return int64(v) //nolint:gosec // v is a disk offset/size, always < 2^63
+}
+
+// u64 widens a non-negative int64 (a file size from os.FileInfo.Size())
+// to uint64.
+func u64(v int64) uint64 {
+	return uint64(v) //nolint:gosec // v is a file size, always non-negative
 }

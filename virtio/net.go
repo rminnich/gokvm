@@ -27,6 +27,28 @@ var (
 const (
 	NetIOPortStart = 0x6200
 	NetIOPortSize  = 0x100
+
+	// netDeviceID identifies this device as a legacy virtio-net PCI
+	// device; netSubsystemID (1) marks it as a virtio network card.
+	netDeviceID    = 0x1000
+	netSubsystemID = 1
+
+	// rxPacketBufSize is the scratch buffer size used to read one raw
+	// packet from the tap device.
+	rxPacketBufSize = 4096
+
+	// virtioNetHdrSize is the size, in bytes, of struct virtio_net_hdr
+	// prepended to/stripped from every packet.
+	// refs https://github.com/torvalds/linux/blob/38f80f42/include/uapi/linux/virtio_net.h#L178-L191
+	virtioNetHdrSize = 10
+
+	// txPollInterval is how often TxThreadEntry polls for pending TX
+	// descriptors as a fallback to the kick channel.
+	txPollInterval = 10 * time.Millisecond
+
+	// descFlagsNext indicates a virtqueue descriptor is chained to
+	// another descriptor via its Next field.
+	descFlagsNext = 0x1
 )
 
 type netHdr struct {
@@ -70,11 +92,11 @@ type netHeader struct {
 
 func (v *Net) GetDeviceHeader() pci.DeviceHeader {
 	return pci.DeviceHeader{
-		DeviceID:    0x1000,
-		VendorID:    0x1AF4,
+		DeviceID:    netDeviceID,
+		VendorID:    virtioVendorID,
 		HeaderType:  0,
-		SubsystemID: 1, // Network Card
-		Command:     1, // Enable IO port
+		SubsystemID: netSubsystemID, // Network Card
+		Command:     1,              // Enable IO port
 		BAR: [6]uint32{
 			NetIOPortStart | 0x1,
 		},
@@ -86,7 +108,7 @@ func (v *Net) GetDeviceHeader() pci.DeviceHeader {
 }
 
 func (v *Net) Read(port uint64, bytes []byte) error {
-	offset := int(port - NetIOPortStart)
+	offset := toInt(port - NetIOPortStart)
 
 	if int(v.Hdr.commonHeader.queueSEL) >= len(v.VirtQueue) {
 		v.Hdr.commonHeader.queueNUM = 0
@@ -104,7 +126,7 @@ func (v *Net) Read(port uint64, bytes []byte) error {
 
 	// ISR is at offset 19 in the virtio common header.
 	// Per the virtio spec, reading ISR clears it.
-	if offset <= 19 && offset+l > 19 {
+	if offset <= regISR && offset+l > regISR {
 		v.Hdr.commonHeader.isr = 0
 	}
 
@@ -130,7 +152,7 @@ func (v *Net) RxThreadEntry() {
 
 func (v *Net) Rx() error {
 	// read raw packet from tap device
-	packet := make([]byte, 4096)
+	packet := make([]byte, rxPacketBufSize)
 
 	n, err := v.tap.Read(packet)
 	if err != nil {
@@ -140,7 +162,7 @@ func (v *Net) Rx() error {
 	packet = packet[:n]
 
 	// append struct virtio_net_hdr
-	packet = append(make([]byte, 10), packet...)
+	packet = append(make([]byte, virtioNetHdrSize), packet...)
 
 	sel := 0
 
@@ -176,7 +198,7 @@ func (v *Net) Rx() error {
 		}
 
 		desc := &v.VirtQueue[sel].DescTable[descID]
-		l := uint32(len(packet))
+		l := u32(uint64(len(packet)))
 
 		if l > desc.Len {
 			l = desc.Len
@@ -190,7 +212,7 @@ func (v *Net) Rx() error {
 		usedRing.Ring[uidx%QueueSize].Len += l
 
 		if prevDescID != NONE {
-			v.VirtQueue[sel].DescTable[prevDescID].Flags |= 0x1
+			v.VirtQueue[sel].DescTable[prevDescID].Flags |= descFlagsNext
 			v.VirtQueue[sel].DescTable[prevDescID].Next = descID
 		}
 
@@ -208,7 +230,7 @@ func (v *Net) Rx() error {
 func (v *Net) TxThreadEntry() {
 	log.Println("virtio-net: TxThreadEntry started")
 
-	ticker := time.NewTicker(10 * time.Millisecond)
+	ticker := time.NewTicker(txPollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -264,7 +286,7 @@ func (v *Net) Tx() error {
 
 			usedRing.Ring[uidx%QueueSize].Len += desc.Len
 
-			if desc.Flags&0x1 != 0 {
+			if desc.Flags&descFlagsNext != 0 {
 				descID = desc.Next
 			} else {
 				break
@@ -273,13 +295,14 @@ func (v *Net) Tx() error {
 
 		// Skip struct virtio_net_hdr
 		// refs https://github.com/torvalds/linux/blob/38f80f42/include/uapi/linux/virtio_net.h#L178-L191
-		buf = buf[10:]
+		buf = buf[virtioNetHdrSize:]
 
 		if _, err := v.tap.Write(buf); err != nil {
 			return err
 		}
 
 		StoreAddU16(&usedRing.Idx, 1)
+
 		v.LastAvailIdx[sel]++
 	}
 
@@ -289,21 +312,21 @@ func (v *Net) Tx() error {
 }
 
 func (v *Net) Write(port uint64, bytes []byte) error {
-	offset := int(port - NetIOPortStart)
+	offset := toInt(port - NetIOPortStart)
 
 	switch offset {
-	case 8:
+	case regQueuePFN:
 		// Queue PFN is aligned to page (4096 bytes)
 		sel := v.Hdr.commonHeader.queueSEL
 		if int(sel) >= len(v.VirtQueue) {
 			break
 		}
 
-		physAddr := uint32(pci.BytesToNum(bytes) * 4096)
+		physAddr := u32(pci.BytesToNum(bytes) * pageSize)
 		v.VirtQueue[sel] = (*VirtQueue)(unsafe.Pointer(&v.Mem[physAddr]))
-	case 14:
-		v.Hdr.commonHeader.queueSEL = uint16(pci.BytesToNum(bytes))
-	case 16:
+	case regQueueSelect:
+		v.Hdr.commonHeader.queueSEL = u16(pci.BytesToNum(bytes))
+	case regQueueNotify:
 		queueIdx := pci.BytesToNum(bytes)
 		switch queueIdx {
 		case 0:
@@ -321,7 +344,7 @@ func (v *Net) Write(port uint64, bytes []byte) error {
 				queueIdx,
 			)
 		}
-	case 19:
+	case regISR:
 	default:
 	}
 
@@ -354,7 +377,7 @@ func NewNet(irq uint8, irqInjector IRQInjector, tap io.ReadWriter, mem []byte) *
 		Hdr: netHdr{
 			commonHeader: commonHeader{
 				queueNUM: QueueSize,
-				isr:      0x0,
+				isr:      isrClear,
 			},
 		},
 		irq:          irq,

@@ -17,6 +17,15 @@ const (
 	BlkIOPortSize  = 0x100
 
 	SectorSize = 512
+
+	// blkDeviceID identifies this device as a legacy virtio-blk PCI
+	// device; blkSubsystemID (2) marks it as a virtio block device.
+	blkDeviceID    = 0x1001
+	blkSubsystemID = 2
+
+	// reqTypeWriteBit distinguishes a write request from a read request
+	// in BlkReq.Type (bit 0: 0 = read, 1 = write).
+	reqTypeWriteBit = 0x1
 )
 
 // LoadU16 reads a uint16 through a non-inlined function
@@ -74,11 +83,11 @@ type blkHeader struct {
 
 func (v *Blk) GetDeviceHeader() pci.DeviceHeader {
 	return pci.DeviceHeader{
-		DeviceID:    0x1001,
-		VendorID:    0x1AF4,
+		DeviceID:    blkDeviceID,
+		VendorID:    virtioVendorID,
 		HeaderType:  0,
-		SubsystemID: 2, // Block Device
-		Command:     1, // Enable IO port
+		SubsystemID: blkSubsystemID, // Block Device
+		Command:     1,              // Enable IO port
 		BAR: [6]uint32{
 			BlkIOPortStart | 0x1,
 		},
@@ -90,7 +99,7 @@ func (v *Blk) GetDeviceHeader() pci.DeviceHeader {
 }
 
 func (v *Blk) Read(port uint64, bytes []byte) error {
-	offset := int(port - BlkIOPortStart)
+	offset := toInt(port - BlkIOPortStart)
 
 	if int(v.Hdr.commonHeader.queueSEL) >= len(v.VirtQueue) {
 		v.Hdr.commonHeader.queueNUM = 0
@@ -108,7 +117,7 @@ func (v *Blk) Read(port uint64, bytes []byte) error {
 
 	// ISR is at offset 19 in the virtio common header.
 	// Per the virtio spec, reading ISR clears it.
-	if offset <= 19 && offset+l > 19 {
+	if offset <= regISR && offset+l > regISR {
 		v.Hdr.commonHeader.isr = 0
 	}
 
@@ -182,7 +191,7 @@ func (v *Blk) IO() error {
 
 		var buf [3][]byte
 
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			desc := v.VirtQueue[sel].DescTable[descID]
 			buf[i] = v.Mem[desc.Addr : desc.Addr+uint64(desc.Len)]
 
@@ -204,15 +213,15 @@ func (v *Blk) IO() error {
 
 		var ioErr error
 
-		if blkReq.Type&0x1 == 0x1 {
+		if blkReq.Type&reqTypeWriteBit == reqTypeWriteBit {
 			_, ioErr = v.file.WriteAt(
 				data,
-				int64(blkReq.Sector*SectorSize),
+				i64(blkReq.Sector*SectorSize),
 			)
 		} else {
 			_, ioErr = v.file.ReadAt(
 				data,
-				int64(blkReq.Sector*SectorSize),
+				i64(blkReq.Sector*SectorSize),
 			)
 
 			if ioErr == nil {
@@ -228,6 +237,7 @@ func (v *Blk) IO() error {
 		}
 
 		StoreAddU16(&usedRing.Idx, 1)
+
 		v.LastAvailIdx[sel]++
 	}
 
@@ -240,25 +250,25 @@ func (v *Blk) IO() error {
 }
 
 func (v *Blk) Write(port uint64, bytes []byte) error {
-	offset := int(port - BlkIOPortStart)
+	offset := toInt(port - BlkIOPortStart)
 
 	switch offset {
-	case 8:
+	case regQueuePFN:
 		// Queue PFN is aligned to page (4096 bytes)
 		sel := v.Hdr.commonHeader.queueSEL
 		if int(sel) >= len(v.VirtQueue) {
 			break
 		}
 
-		physAddr := uint32(pci.BytesToNum(bytes) * 4096)
+		physAddr := u32(pci.BytesToNum(bytes) * pageSize)
 		v.VirtQueue[sel] = (*VirtQueue)(
 			unsafe.Pointer(&v.Mem[physAddr]))
 
 		log.Printf("virtio-blk: queue %d PFN set,"+
 			" physAddr=0x%x", sel, physAddr)
-	case 14:
-		v.Hdr.commonHeader.queueSEL = uint16(pci.BytesToNum(bytes))
-	case 16:
+	case regQueueSelect:
+		v.Hdr.commonHeader.queueSEL = u16(pci.BytesToNum(bytes))
+	case regQueueNotify:
 		select {
 		case v.kick <- true:
 			log.Println("virtio-blk: kick sent")
@@ -271,7 +281,7 @@ func (v *Blk) Write(port uint64, bytes []byte) error {
 					v.LastAvailIdx[0])
 			}
 		}
-	case 19:
+	case regISR:
 	default:
 	}
 
@@ -294,7 +304,9 @@ func (v *Blk) Close() error {
 }
 
 func NewBlk(path string, irq uint8, irqInjector IRQInjector, mem []byte) (*Blk, error) {
-	file, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	const diskFilePerm = 0o644
+
+	file, err := os.OpenFile(path, os.O_RDWR, diskFilePerm)
 	if err != nil {
 		return nil, err
 	}
@@ -304,13 +316,13 @@ func NewBlk(path string, irq uint8, irqInjector IRQInjector, mem []byte) (*Blk, 
 		return nil, err
 	}
 
-	fileSize := uint64(fileInfo.Size())
+	fileSize := u64(fileInfo.Size())
 
 	res := &Blk{
 		Hdr: blkHdr{
 			commonHeader: commonHeader{
 				queueNUM: QueueSize,
-				isr:      0x0,
+				isr:      isrClear,
 			},
 			blkHeader: blkHeader{
 				capacity: fileSize / SectorSize,

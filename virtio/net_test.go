@@ -86,7 +86,7 @@ func TestSetQueuePhysAddr(t *testing.T) {
 		uint32(uintptr(unsafe.Pointer(v.VirtQueue[1]))),
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if expected[0] != actual[0] {
 			t.Fatalf("expected[%d]: 0x%x, actual[%d]: 0x%x\n", i, expected[i], i, actual[i])
 		}
@@ -290,7 +290,7 @@ func TestNetWriteNonBlockingKick(t *testing.T) {
 
 	// Write offset 16 with queue index 1 (TX) twice.
 	// Both must complete without blocking.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		done := make(chan struct{})
 
 		go func() {
@@ -412,7 +412,7 @@ func TestNetConcurrentCloseAndWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			_ = v.Write(
 				virtio.NetIOPortStart+16,
 				[]byte{0x1, 0x0}, // queue 1 = TX

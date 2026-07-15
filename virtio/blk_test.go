@@ -154,7 +154,7 @@ func TestBlkIOStatusByte(t *testing.T) {
 	t.Parallel()
 
 	// Create a temp file with known content.
-	f, err := os.CreateTemp("", "blk-test-*")
+	f, err := os.CreateTemp(t.TempDir(), "blk-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestBlkIOStatusByte(t *testing.T) {
 func TestBlkClose(t *testing.T) {
 	t.Parallel()
 
-	f, err := os.CreateTemp("", "blk-close-*")
+	f, err := os.CreateTemp(t.TempDir(), "blk-close-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestBlkClose(t *testing.T) {
 func TestBlkIOThreadExitsOnClose(t *testing.T) {
 	t.Parallel()
 
-	f, err := os.CreateTemp("", "blk-iothread-*")
+	f, err := os.CreateTemp(t.TempDir(), "blk-iothread-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestBlkWriteNonBlockingKick(t *testing.T) {
 	// Write offset 16 twice rapidly. With a blocking
 	// send on a size-1 channel the second call would
 	// block the vCPU. Both must complete promptly.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		done := make(chan struct{})
 
 		go func() {
@@ -359,7 +359,7 @@ func TestBlkWriteNonBlockingKick(t *testing.T) {
 func TestBlkWriteAfterClose(t *testing.T) {
 	t.Parallel()
 
-	f, err := os.CreateTemp("", "blk-wac-*")
+	f, err := os.CreateTemp(t.TempDir(), "blk-wac-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestBlkWriteAfterClose(t *testing.T) {
 func TestBlkConcurrentCloseAndWrite(t *testing.T) {
 	t.Parallel()
 
-	f, err := os.CreateTemp("", "blk-ccw-*")
+	f, err := os.CreateTemp(t.TempDir(), "blk-ccw-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +421,7 @@ func TestBlkConcurrentCloseAndWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			_ = v.Write(
 				virtio.BlkIOPortStart+16,
 				[]byte{0x0, 0x0},
@@ -446,7 +446,7 @@ func TestBlkISRClearedOnRead(t *testing.T) {
 	t.Parallel()
 
 	// Create a temp file with enough data for one sector.
-	f, err := os.CreateTemp("", "blk-isr-*")
+	f, err := os.CreateTemp(t.TempDir(), "blk-isr-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +529,7 @@ func TestBlkISRClearedOnRead(t *testing.T) {
 func TestBlkIOThreadReInjectsIRQ(t *testing.T) {
 	t.Parallel()
 
-	f, err := os.CreateTemp("", "blk-reinject-*")
+	f, err := os.CreateTemp(t.TempDir(), "blk-reinject-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +614,7 @@ func TestBlkIOThreadReInjectsIRQ(t *testing.T) {
 func TestBlkISRNotClearedOnNotify(t *testing.T) {
 	t.Parallel()
 
-	f, err := os.CreateTemp("", "blk-isr-notify-*")
+	f, err := os.CreateTemp(t.TempDir(), "blk-isr-notify-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,7 +797,7 @@ func TestLoadU16StoreAddU16(t *testing.T) {
 
 	wg.Add(N)
 
-	for i := 0; i < N; i++ {
+	for range N {
 		go func() {
 			defer wg.Done()
 			virtio.StoreAddU16(&val, 1)
