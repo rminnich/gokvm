@@ -19,7 +19,7 @@ func TestNew(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(bytes) != 1532 {
+	if len(bytes) != 1556 {
 		t.Fatalf("Invalid size: %v", len(bytes))
 	}
 }

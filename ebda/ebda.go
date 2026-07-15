@@ -95,6 +95,43 @@ const (
 	// numISAIRQs is the number of legacy ISA IRQ lines (0-15) this MP
 	// table identity-maps to I/O APIC pins 0-15.
 	numISAIRQs = 16
+
+	// mpBusIDPCI is the (arbitrary but conventional) bus ID used for the
+	// single PCI bus this MP table describes, distinct from mpBusIDISA.
+	mpBusIDPCI = 1
+
+	// pciNetSlot/pciBlkSlot are the PCI device (slot) numbers assigned
+	// to the virtio-net and virtio-blk devices. These must match the
+	// fixed order in which machine.Machine.AddTapIf/AddDisk append
+	// devices to pci.PCI.Devices (see machine/machine_linux_amd64.go):
+	// slot 0 is the host bridge, slot 1 is virtio-net, slot 2 is
+	// virtio-blk.
+	pciNetSlot = 1
+	pciBlkSlot = 2
+
+	// pciIntPinA is the INTx# pin index (0 == INTA#) both virtio
+	// devices use; see InterruptPin: 1 in virtio/net.go and
+	// virtio/blk.go's PCI configuration headers.
+	pciIntPinA = 0
+
+	// virtioNetGSI/virtioBlkGSI are the I/O APIC input pins (global
+	// system interrupts) that machine_linux_amd64.go actually injects
+	// virtio-net/virtio-blk interrupts on (its virtioNetIRQ/virtioBlkIRQ
+	// consts). These must match, or the guest's PCI IRQ routing will
+	// resolve pci_dev->irq to a GSI that nothing ever raises.
+	virtioNetGSI = 9
+	virtioBlkGSI = 10
+
+	// numPCIInterrupts is the number of PCI I/O Interrupt Assignment
+	// entries this MP table describes: one INTA# routing per virtio
+	// device (net, blk).
+	numPCIInterrupts = 2
+
+	// pciSrcBusIRQShift is the bit position of the PCI device (slot)
+	// number within an I/O Interrupt Assignment entry's srcBusIRQ field
+	// when srcBusID names a PCI bus; the low bits hold the INTx# pin
+	// index. See Table 4-7 in the Intel MP Configuration spec.
+	pciSrcBusIRQShift = 2
 )
 
 var errorVCPUNumExceed = fmt.Errorf("the number of vCPUs must be less than or equal to %d", maxVCPUs)
@@ -153,10 +190,12 @@ type (
 		lapic     uint32 // Local APIC addresss must be set.
 		_         uint32 // reserved
 
-		mpcCPU         [maxVCPUs]mpcCPU
-		mpcBus         mpcBus
-		mpcIOAPIC      mpcIOAPIC
-		mpcIOInterrupt [numISAIRQs]mpcIOInterrupt
+		mpcCPU          [maxVCPUs]mpcCPU
+		mpcBus          mpcBus
+		mpcPCIBus       mpcBus
+		mpcIOAPIC       mpcIOAPIC
+		mpcIOInterrupt  [numISAIRQs]mpcIOInterrupt
+		mpcPCIInterrupt [numPCIInterrupts]mpcIOInterrupt
 	}
 
 	// MP Bus Entry (type 1): identifies one system bus (here, the
@@ -314,6 +353,50 @@ func newMPCIOInterrupts() [numISAIRQs]mpcIOInterrupt {
 	return entries
 }
 
+// newMPCPCIBus returns the single PCI bus entry the PCI I/O interrupt
+// assignments below refer to as their source bus.
+func newMPCPCIBus() mpcBus {
+	return mpcBus{
+		typ:     mpEntryTypeBus,
+		busID:   mpBusIDPCI,
+		busType: [6]uint8{'P', 'C', 'I', ' ', ' ', ' '},
+	}
+}
+
+// pciSrcBusIRQ encodes a PCI device's (slot, INTx# pin) pair into the
+// srcBusIRQ field of an I/O Interrupt Assignment entry, per Table 4-7
+// in the Intel MP Configuration spec.
+func pciSrcBusIRQ(slot, pin int) uint8 {
+	return u8FromInt((slot << pciSrcBusIRQShift) | pin)
+}
+
+// newMPCPCIInterrupts returns one I/O Interrupt Assignment entry per
+// virtio PCI device, routing each device's INTA# pin to the exact I/O
+// APIC pin (GSI) machine_linux_amd64.go injects that device's
+// interrupts on, so the guest kernel resolves pci_dev->irq correctly.
+func newMPCPCIInterrupts() [numPCIInterrupts]mpcIOInterrupt {
+	return [numPCIInterrupts]mpcIOInterrupt{
+		{
+			typ:        mpEntryTypeIOInterruptAssign,
+			intType:    mpIntTypeINT,
+			flags:      mpIntFlagBusDefault,
+			srcBusID:   mpBusIDPCI,
+			srcBusIRQ:  pciSrcBusIRQ(pciNetSlot, pciIntPinA),
+			dstAPICID:  mpIOAPICID,
+			dstAPICINT: virtioNetGSI,
+		},
+		{
+			typ:        mpEntryTypeIOInterruptAssign,
+			intType:    mpIntTypeINT,
+			flags:      mpIntFlagBusDefault,
+			srcBusID:   mpBusIDPCI,
+			srcBusIRQ:  pciSrcBusIRQ(pciBlkSlot, pciIntPinA),
+			dstAPICID:  mpIOAPICID,
+			dstAPICINT: virtioBlkGSI,
+		},
+	}
+}
+
 func newMPCTable(nCPUs int) (*mpcTable, error) {
 	m := &mpcTable{}
 	m.signature = mpcTableSignature
@@ -322,9 +405,10 @@ func newMPCTable(nCPUs int) (*mpcTable, error) {
 	m.lapic = apicAddr(0)
 	m.OEMId = [8]byte{0x47, 0x4F, 0x4B, 0x56, 0x4D, 0x00, 0x00, 0x00} // "GOKVM   "
 	// This must be the number of entries: maxVCPUs processor entries
-	// (unused slots are zeroed/disabled), plus 1 bus, 1 I/O APIC, and
-	// numISAIRQs I/O interrupt assignment entries.
-	m.oemCount = maxVCPUs + 1 + 1 + numISAIRQs
+	// (unused slots are zeroed/disabled), plus 1 ISA bus, 1 PCI bus,
+	// 1 I/O APIC, numISAIRQs I/O interrupt assignment entries, and
+	// numPCIInterrupts PCI I/O interrupt assignment entries.
+	m.oemCount = maxVCPUs + 1 + 1 + 1 + numISAIRQs + numPCIInterrupts
 
 	if nCPUs > maxVCPUs {
 		return nil, errorVCPUNumExceed
@@ -337,8 +421,10 @@ func newMPCTable(nCPUs int) (*mpcTable, error) {
 	}
 
 	m.mpcBus = newMPCBus()
+	m.mpcPCIBus = newMPCPCIBus()
 	m.mpcIOAPIC = newMPCIOAPIC()
 	m.mpcIOInterrupt = newMPCIOInterrupts()
+	m.mpcPCIInterrupt = newMPCPCIInterrupts()
 
 	m.checkSum, err = m.calcCheckSum()
 	if err != nil {
