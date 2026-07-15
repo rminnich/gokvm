@@ -8,8 +8,8 @@ var errDataLenInvalid = errors.New("invalid data size on port")
 // bus it is attached to.
 // Clean up and unifying pci.Device and Device of this package will be required.
 type Device interface {
-	Read(uint64, []byte) error
-	Write(uint64, []byte) error
+	Read(port uint64, data []byte) error
+	Write(port uint64, data []byte) error
 	IOPort() uint64
 	Size() uint64
 }

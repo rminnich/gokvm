@@ -6,6 +6,13 @@ import (
 
 type FWDebug struct{}
 
+// fwDebugIOPort/fwDebugSize are this device's IO port address and size.
+// https://github.com/tianocore/edk2/commit/bf23b44d926982dfc9ecc7785cea17e0889a9297
+const (
+	fwDebugIOPort = 0x402
+	fwDebugSize   = 0x1
+)
+
 func (f *FWDebug) Read(port uint64, data []byte) error {
 	if len(data) == 1 {
 		// This magic value is read from the Port to indicate the availability of the debug port.
@@ -34,9 +41,9 @@ func (f *FWDebug) Write(port uint64, data []byte) error {
 
 func (f *FWDebug) IOPort() uint64 {
 	// https://github.com/tianocore/edk2/commit/bf23b44d926982dfc9ecc7785cea17e0889a9297
-	return 0x402
+	return fwDebugIOPort
 }
 
 func (f *FWDebug) Size() uint64 {
-	return 0x1
+	return fwDebugSize
 }

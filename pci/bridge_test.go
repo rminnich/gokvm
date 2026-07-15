@@ -25,11 +25,11 @@ func TestIOHanders(t *testing.T) {
 	expected := pci.ErrIONotPermit
 	br := pci.NewBridge()
 
-	if actual := br.Read(0x0, []byte{}); !errors.Is(expected, actual) {
+	if actual := br.Read(0x0, []byte{}); !errors.Is(actual, expected) {
 		t.Fatalf("expected: %v, actual: %v", expected, actual)
 	}
 
-	if actual := br.Write(0x0, []byte{}); !errors.Is(expected, actual) {
+	if actual := br.Write(0x0, []byte{}); !errors.Is(actual, expected) {
 		t.Fatalf("expected: %v, actual: %v", expected, actual)
 	}
 }

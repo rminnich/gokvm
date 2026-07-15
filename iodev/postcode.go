@@ -4,6 +4,12 @@ import "fmt"
 
 type PostCode struct{}
 
+// postCodeIOPort/postCodeSize are this device's IO port address and size.
+const (
+	postCodeIOPort = 0x80
+	postCodeSize   = 0x1
+)
+
 func (p *PostCode) Read(port uint64, data []byte) error {
 	return nil
 }
@@ -23,9 +29,9 @@ func (p *PostCode) Write(port uint64, data []byte) error {
 }
 
 func (p *PostCode) IOPort() uint64 {
-	return 0x80
+	return postCodeIOPort
 }
 
 func (p *PostCode) Size() uint64 {
-	return 0x1
+	return postCodeSize
 }

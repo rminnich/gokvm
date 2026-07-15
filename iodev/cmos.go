@@ -9,11 +9,61 @@ const (
 	indexOffset = uint64(0x70)
 	dataOffset  = uint64(0x71)
 	dataLen     = uint64(128)
+
+	// CMOS RAM register addresses used by Read/Write below.
+	cmosRegSeconds = 0x00
+	cmosRegMinutes = 0x02
+	cmosRegHours   = 0x04
+	cmosRegWeekday = 0x06
+	cmosRegDay     = 0x07
+	cmosRegMonth   = 0x08
+	cmosRegYear    = 0x09
+	cmosRegStatusA = 0x0A
+	cmosRegStatusD = 0x0D
+	cmosRegCentury = 0x32
+
+	// Status Register A: divider bits 6:4 = 0b010 selects the
+	// 32.768 kHz time base; bit 7 = Update-In-Progress.
+	cmosStatusAFreq32kHz = 1 << 5
+	cmosStatusAUIPClear  = 0 << 7
+	cmosStatusA          = cmosStatusAFreq32kHz | cmosStatusAUIPClear
+
+	// Status Register D: bit 7 indicates the CMOS RAM/battery is valid.
+	cmosStatusDValidRAM = 1 << 7
+
+	// bcdNibbleShift is the bit width of a BCD nibble.
+	bcdNibbleShift = 4
+
+	// yearCenturyDivisor extracts the century from a 4-digit year.
+	yearCenturyDivisor = 100
+
+	// timeCenturyBase mirrors the traditional C `tm_year + 1900`
+	// century arithmetic, kept as-is from the original implementation.
+	timeCenturyBase = 1900
+
+	// defaultExtMemKB is the CMOS-reported extended memory size (in KB,
+	// above 1 MB), assuming a fixed 3 GB of RAM for now.
+	defaultExtMemKB = 0xBC00
+
+	// ioPortIndex/ioPortSize are this device's IO port address and size.
+	ioPortIndex = 0x70
+	ioPortSize  = 0x2
+
+	// extMemHiByteShift extracts the high byte of the 16-bit extended
+	// memory size stored across CMOS registers 0x34/0x35.
+	extMemHiByteShift = 8
 )
 
 type CMOS struct {
 	Index uint8
 	Data  []uint8
+}
+
+// u8 truncates v to its low 8 bits. Used only where v is known by
+// construction to be a small value (a byte-sized field of a hardware
+// register, or a wall-clock second/minute/hour component).
+func u8(v int) uint8 {
+	return uint8(v) //nolint:gosec // bounded by construction, see call sites
 }
 
 func NewCMOS(memBelow4G, memAbove4G uint64) *CMOS {
@@ -23,10 +73,10 @@ func NewCMOS(memBelow4G, memAbove4G uint64) *CMOS {
 	}
 
 	// We assume 3G RAM at all times for now.....
-	extMem := uint16(0xBC00)
+	extMem := uint16(defaultExtMemKB)
 
-	cmos.Data[0x34] = uint8(extMem)
-	cmos.Data[0x35] = uint8(extMem >> 8)
+	cmos.Data[0x34] = u8(int(extMem))
+	cmos.Data[0x35] = u8(int(extMem >> extMemHiByteShift))
 
 	// Only valid for PVH boot of firmware with 3G RAM fixed.....
 	cmos.Data[0x5b] = 0
@@ -53,7 +103,7 @@ func (c *CMOS) Read(base uint64, data []byte) error {
 	case dataOffset:
 		dt := time.Now()
 		secs := dt.Second()
-		min := dt.Minute()
+		minute := dt.Minute()
 		hour := dt.Hour()
 		weekd := dt.Weekday()
 		day := dt.Day()
@@ -61,26 +111,26 @@ func (c *CMOS) Read(base uint64, data []byte) error {
 		year := dt.Year()
 
 		switch c.Index {
-		case 0x00:
-			d = toBCD(uint8(secs))
-		case 0x02:
-			d = toBCD(uint8(min))
-		case 0x04:
-			d = toBCD(uint8(hour))
-		case 0x06:
-			d = toBCD(uint8(weekd))
-		case 0x07:
-			d = toBCD(uint8(day))
-		case 0x08:
-			d = toBCD(uint8(month))
-		case 0x09:
-			d = toBCD(uint8(year % 100))
-		case 0x0A:
-			d = 1<<5 | 0<<7 // 32kHz Clock and we assume no update in progress
-		case 0x0D:
-			d = 1 << 7
-		case 0x32:
-			d = toBCD((uint8(year+1900) / 100))
+		case cmosRegSeconds:
+			d = toBCD(u8(secs))
+		case cmosRegMinutes:
+			d = toBCD(u8(minute))
+		case cmosRegHours:
+			d = toBCD(u8(hour))
+		case cmosRegWeekday:
+			d = toBCD(u8(int(weekd)))
+		case cmosRegDay:
+			d = toBCD(u8(day))
+		case cmosRegMonth:
+			d = toBCD(u8(int(month)))
+		case cmosRegYear:
+			d = toBCD(u8(year % yearCenturyDivisor))
+		case cmosRegStatusA:
+			d = cmosStatusA // 32kHz Clock and we assume no update in progress
+		case cmosRegStatusD:
+			d = cmosStatusDValidRAM
+		case cmosRegCentury:
+			d = toBCD(u8((year + timeCenturyBase) / yearCenturyDivisor))
 		default:
 			d = c.Data[c.Index&indexMask]
 		}
@@ -115,13 +165,18 @@ func (c *CMOS) Write(base uint64, data []byte) error {
 }
 
 func toBCD(v uint8) uint8 {
-	return ((v / 100) << 4) | (v % 10)
+	const (
+		bcdDivisor    = 100
+		bcdOnesModulo = 10
+	)
+
+	return ((v / bcdDivisor) << bcdNibbleShift) | (v % bcdOnesModulo)
 }
 
 func (c *CMOS) IOPort() uint64 {
-	return 0x70
+	return ioPortIndex
 }
 
 func (c *CMOS) Size() uint64 {
-	return 0x2
+	return ioPortSize
 }

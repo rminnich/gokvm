@@ -8,6 +8,12 @@ import (
 	"github.com/bobuhiro11/gokvm/pci"
 )
 
+// truncU32 narrows v to uint32. In this test v is always built from
+// exactly 4 bytes via pci.BytesToNum, so the value always fits.
+func truncU32(v uint64) uint32 {
+	return uint32(v) //nolint:gosec // v is built from exactly 4 bytes in this test
+}
+
 func TestSizeToBits(t *testing.T) {
 	t.Parallel()
 
@@ -27,9 +33,9 @@ func TestSizeToBits(t *testing.T) {
 			expected: 0x0,
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			if tt.expected != pci.SizeToBits(tt.input) {
 				t.Fatalf("expected: %v, actual: %v", tt.expected, tt.input)
 			}
@@ -116,7 +122,7 @@ func TestProbingBAR0(t *testing.T) {
 
 	bytes := make([]byte, 4)
 	_ = p.PciConfDataIn(0xCFC, bytes)
-	actual := uint32(pci.BytesToNum(bytes))
+	actual := truncU32(pci.BytesToNum(bytes))
 
 	if expected != actual {
 		t.Fatalf("expected: 0x%x, actual: 0x%x", expected, actual)
@@ -171,9 +177,9 @@ func TestPciConfAddrInOut(t *testing.T) {
 			exp:  nil,
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			if err := p.PciConfAddrIn(tt.port, tt.data); !errors.Is(err, tt.exp) {
 				t.Fatalf("%s failed: %v", tt.name, err)
 			}
@@ -210,9 +216,9 @@ func TestPciConfDataInOut(t *testing.T) {
 			exp:  nil,
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			if err := tt.pci.PciConfDataIn(tt.port, tt.data); !errors.Is(err, tt.exp) {
 				t.Fatalf("%s failed: %v", tt.name, err)
 			}

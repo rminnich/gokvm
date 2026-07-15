@@ -4,12 +4,23 @@ import "errors"
 
 var ErrIONotPermit = errors.New("IO is not permitted for PCI bridge")
 
+// bridgeDeviceID/bridgeVendorID identify this emulated device as an
+// Intel (0x8086) host bridge (0x0d57).
+const (
+	bridgeDeviceID = 0x0d57
+	bridgeVendorID = 0x8086
+
+	// bridgeBAR0Size is the (unused) BAR0 IO-space size advertised by
+	// this bridge.
+	bridgeBAR0Size = 0x10
+)
+
 type bridge struct{}
 
 func (br bridge) GetDeviceHeader() DeviceHeader {
 	return DeviceHeader{
-		DeviceID:      0x0d57,
-		VendorID:      0x8086,
+		DeviceID:      bridgeDeviceID,
+		VendorID:      bridgeVendorID,
 		HeaderType:    1,
 		SubsystemID:   0,
 		InterruptLine: 0,
@@ -32,7 +43,7 @@ func (br bridge) IOPort() uint64 {
 }
 
 func (br bridge) Size() uint64 {
-	return 0x10
+	return bridgeBAR0Size
 }
 
 func NewBridge() Device {

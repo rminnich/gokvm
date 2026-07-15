@@ -12,6 +12,17 @@ type ACPIShutDown struct {
 	// ResetEvent chan int
 }
 
+// ACPI DSDT PM1 control register layout used for the S5 (shutdown)
+// sleep type, and this device's IO port range.
+const (
+	acpiS5SleepVal       = 5
+	acpiSleepStatusENBit = 5
+	acpiSleepValBit      = 2
+
+	acpiShutdownIOPort = 0x600
+	acpiShutdownSize   = 0x8
+)
+
 func NewACPIShutDownEvent() *ACPIShutDown {
 	return &ACPIShutDown{}
 }
@@ -29,9 +40,9 @@ func (a *ACPIShutDown) Write(base uint64, data []byte) error {
 		log.Println("ACPI Reboot signaled")
 	}
 	// The ACPI DSDT table specifies the S5 sleep state (shutdown) as value 5
-	S5SleepVal := uint8(5)
-	SleepStatusENBit := uint8(5)
-	SleepValBit := uint8(2)
+	S5SleepVal := uint8(acpiS5SleepVal)
+	SleepStatusENBit := uint8(acpiSleepStatusENBit)
+	SleepValBit := uint8(acpiSleepValBit)
 
 	if data[0] == (S5SleepVal<<SleepValBit)|(1<<SleepStatusENBit) {
 		// a.ExitEvent <- 1
@@ -42,9 +53,9 @@ func (a *ACPIShutDown) Write(base uint64, data []byte) error {
 }
 
 func (a *ACPIShutDown) IOPort() uint64 {
-	return 0x600
+	return acpiShutdownIOPort
 }
 
 func (a *ACPIShutDown) Size() uint64 {
-	return 0x8
+	return acpiShutdownSize
 }
