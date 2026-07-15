@@ -100,6 +100,19 @@ func (r *RunData) IO() (uint64, uint64, uint64, uint64, uint64) {
 	return direction, size, port, count, offset
 }
 
+// MMIO interprets EXITMMIO requests from a VM, by unpacking
+// RunData.Data[0:2]: the guest physical address being accessed, the raw
+// data bytes (as a little-endian-packed uint64; only the low length
+// bytes are meaningful), the access length, and whether it was a write.
+func (r *RunData) MMIO() (physAddr, data uint64, length uint32, isWrite bool) {
+	physAddr = r.Data[0]
+	data = r.Data[1]
+	length = uint32(r.Data[2])
+	isWrite = (r.Data[2]>>32)&0xFF != 0
+
+	return physAddr, data, length, isWrite
+}
+
 // GetAPIVersion gets the qemu API version, which changes rarely if at all.
 func GetAPIVersion(kvmFd uintptr) (uintptr, error) {
 	return Ioctl(kvmFd, IIO(kvmGetAPIVersion), uintptr(0))

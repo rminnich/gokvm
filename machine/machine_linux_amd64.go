@@ -40,8 +40,6 @@ const (
 	virtioBlkIRQ = 10
 
 	pageTableBase = 0x30_000
-
-	MinMemSize = 1 << 25
 )
 
 const (
@@ -111,13 +109,8 @@ const (
 	Poison = "\xB8\xBE\xBA\xFE\xCA\x90\x0F\x0B"
 )
 
-var ErrZeroSizeKernel = errors.New("kernel is 0 bytes")
-
 // ErrWriteToCF9 indicates a write to cf9, the standard x86 reset port.
 var ErrWriteToCF9 = fmt.Errorf("power cycle via 0xcf9")
-
-// ErrBadVA indicates a bad virtual address was used.
-var ErrBadVA = fmt.Errorf("bad virtual address")
 
 // ErrBadCPU indicates a cpu number is invalid.
 var ErrBadCPU = fmt.Errorf("bad cpu number")
@@ -125,16 +118,9 @@ var ErrBadCPU = fmt.Errorf("bad cpu number")
 // ErrUnsupported indicates something we do not yet do.
 var ErrUnsupported = fmt.Errorf("unsupported")
 
-// ErrMemTooSmall indicates the requested memory size is too small.
-var ErrMemTooSmall = fmt.Errorf("mem request must be at least 1<<20")
-
 var ErrNotELF64File = fmt.Errorf("file is not ELF64")
 
 var errPTNoteHasNoFSize = fmt.Errorf("elf programm PT_NOTE has file size equel zero")
-
-// ErrMachineStopped is returned by RunOnce when Machine.Close
-// has been called.
-var ErrMachineStopped = errors.New("machine stopped")
 
 type Machine struct {
 	kvmFd, vmFd    uintptr
