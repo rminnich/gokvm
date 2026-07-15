@@ -9,6 +9,12 @@ import (
 
 // CPUID call 'KVM_GET_SUPPORTED_CPUID' and print the result.
 func CPUID() error {
+	// maxCPUIDEntries is the number of kvm.CPUIDEntry2 slots to allocate
+	// for KVM_GET_SUPPORTED_CPUID; the kernel returns E2BIG if more
+	// entries than this are available, but 100 is comfortably above any
+	// real CPU's supported-leaf count.
+	const maxCPUIDEntries = 100
+
 	kvmFile, err := os.Open("/dev/kvm")
 	if err != nil {
 		return err
@@ -18,8 +24,8 @@ func CPUID() error {
 	kvmfd := kvmFile.Fd()
 
 	cpuid := kvm.CPUID{
-		Nent:    100,
-		Entries: make([]kvm.CPUIDEntry2, 100),
+		Nent:    maxCPUIDEntries,
+		Entries: make([]kvm.CPUIDEntry2, maxCPUIDEntries),
 	}
 
 	if err := kvm.GetSupportedCPUID(kvmfd, &cpuid); err != nil {

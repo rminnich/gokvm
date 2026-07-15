@@ -11,6 +11,17 @@ import (
 
 const (
 	COM1Addr = 0x03f8
+
+	// inputBufSize is the size of the buffered channel of bytes waiting
+	// to be read by the guest.
+	inputBufSize = 10000
+
+	// UART register offsets from the base COM port address.
+	uartRegIIR = 2 // Interrupt Identification Register (read) / FCR (write)
+	uartRegLCR = 3 // Line Control Register
+	uartRegMCR = 4 // Modem Control Register
+	uartRegLSR = 5 // Line Status Register
+	uartRegMSR = 6 // Modem Status Register
 )
 
 // Note that this identical interface is defined across
@@ -33,7 +44,7 @@ type Serial struct {
 func New(irqInjector IRQInjector) (*Serial, error) {
 	s := &Serial{
 		IER: 0, LCR: 0,
-		inputChan:   make(chan byte, 10000),
+		inputChan:   make(chan byte, inputBufSize),
 		irqInjector: irqInjector,
 		output:      os.Stdout,
 	}
@@ -71,13 +82,13 @@ func (s *Serial) In(port uint64, values []byte) error {
 	case port == 1 && s.dlab():
 		// DLM
 		values[0] = 0x0 // baud rate 9600
-	case port == 2:
+	case port == uartRegIIR:
 		// IIR
-	case port == 3:
+	case port == uartRegLCR:
 		// LCR
-	case port == 4:
+	case port == uartRegMCR:
 		// MCR
-	case port == 5:
+	case port == uartRegLSR:
 		// LSR
 		values[0] |= 0x20 // Empty Transmitter Holding Register
 		values[0] |= 0x40 // Empty Data Holding Registers
@@ -85,7 +96,7 @@ func (s *Serial) In(port uint64, values []byte) error {
 		if len(s.inputChan) > 0 {
 			values[0] |= 0x1 // Data Ready
 		}
-	case port == 6:
+	case port == uartRegMSR:
 		// MSR
 		break
 	}
@@ -112,12 +123,12 @@ func (s *Serial) Out(port uint64, values []byte) error {
 		}
 	case port == 1 && s.dlab():
 		// DLM
-	case port == 2:
+	case port == uartRegIIR:
 		// FCR
-	case port == 3:
+	case port == uartRegLCR:
 		// LCR
 		s.LCR = values[0]
-	case port == 4:
+	case port == uartRegMCR:
 		// MCR
 	default:
 		// factory test or not used

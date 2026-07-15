@@ -81,7 +81,11 @@ func parseProbeArgs(args []string) (*ProbeArgs, error) {
 }
 
 func ParseArgs(args []string) (*BootArgs, *ProbeArgs, error) {
-	if len(args) < 2 {
+	// minArgsForSubcommand is the minimum argv length required to have a
+	// subcommand name (argv[0] is the program name, argv[1] the subcommand).
+	const minArgsForSubcommand = 2
+
+	if len(args) < minArgsForSubcommand {
 		return nil, nil, ErrorInvalidSubcommands
 	}
 
@@ -103,6 +107,12 @@ func ParseArgs(args []string) (*BootArgs, *ProbeArgs, error) {
 // ParseSize parses a size string as number[gGmMkK]. The multiplier is optional,
 // and if not set, the unit passed in is used. The number can be any base and
 // size.
+const (
+	kiloShift = 10
+	megaShift = 20
+	gigaShift = 30
+)
+
 func ParseSize(s, unit string) (int, error) {
 	sz := strings.TrimRight(s, "gGmMkK")
 	if len(sz) == 0 {
@@ -120,11 +130,11 @@ func ParseSize(s, unit string) (int, error) {
 
 	switch unit {
 	case "G", "g":
-		return int(amt) << 30, nil
+		return int(amt) << gigaShift, nil
 	case "M", "m":
-		return int(amt) << 20, nil
+		return int(amt) << megaShift, nil
 	case "K", "k":
-		return int(amt) << 10, nil
+		return int(amt) << kiloShift, nil
 	case "":
 		return int(amt), nil
 	}

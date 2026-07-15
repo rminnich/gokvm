@@ -95,7 +95,7 @@ func (t *Tap) Close() error {
 	return syscall.Close(t.fd)
 }
 
-func (t Tap) Write(buf []byte) (n int, err error) {
+func (t *Tap) Write(buf []byte) (n int, err error) {
 	for {
 		n, err = syscall.Write(t.fd, buf)
 		if errors.Is(err, syscall.EINTR) {
@@ -106,7 +106,7 @@ func (t Tap) Write(buf []byte) (n int, err error) {
 	}
 }
 
-func (t Tap) Read(buf []byte) (n int, err error) {
+func (t *Tap) Read(buf []byte) (n int, err error) {
 	for {
 		n, err = syscall.Read(t.fd, buf)
 		if errors.Is(err, syscall.EINTR) {

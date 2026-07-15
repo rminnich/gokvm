@@ -17,11 +17,17 @@ type termios struct {
 	Ospeed uint32
 }
 
+// Linux terminal ioctl request numbers (see asm-generic/ioctls.h).
+const (
+	tcgets = 0x5401
+	tcsets = 0x5402
+)
+
 func read(fd int) (termios, error) {
 	var t termios
 
 	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL, uintptr(fd), 0x5401,
+		syscall.SYS_IOCTL, uintptr(fd), tcgets,
 		uintptr(unsafe.Pointer(&t)))
 
 	if errno != 0 {
@@ -33,7 +39,7 @@ func read(fd int) (termios, error) {
 
 func write(fd int, t termios) error {
 	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL, uintptr(fd), 0x5402,
+		syscall.SYS_IOCTL, uintptr(fd), tcsets,
 		uintptr(unsafe.Pointer(&t)))
 
 	if errno != 0 {

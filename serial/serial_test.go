@@ -18,6 +18,16 @@ func (m *mockInjector) InjectSerialIRQ() error {
 	return nil
 }
 
+// numUARTRegs is the number of consecutive UART register offsets
+// exercised by TestIn/TestOut below.
+const numUARTRegs = 8
+
+// regOffset widens a small, known-non-negative loop index (0..numUARTRegs-1)
+// to uint64 for use as a port offset.
+func regOffset(i int) uint64 {
+	return uint64(i) //nolint:gosec // i is always in [0, numUARTRegs)
+}
+
 func TestNew(t *testing.T) {
 	t.Parallel()
 
@@ -39,8 +49,8 @@ func TestIn(t *testing.T) {
 
 	// Here the unit test call the function simply.
 	// It needs to be fixed.
-	for i := 0; i < 8; i++ {
-		if err := s.In(uint64(serial.COM1Addr+i), []byte{0}); err != nil {
+	for i := range numUARTRegs {
+		if err := s.In(serial.COM1Addr+regOffset(i), []byte{0}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -56,8 +66,8 @@ func TestOut(t *testing.T) {
 
 	// Here the unit test call the function simply.
 	// It needs to be fixed.
-	for i := 0; i < 8; i++ {
-		if err := s.Out(uint64(serial.COM1Addr+i), []byte{0}); err != nil {
+	for i := range numUARTRegs {
+		if err := s.Out(serial.COM1Addr+regOffset(i), []byte{0}); err != nil {
 			t.Fatal(err)
 		}
 	}
