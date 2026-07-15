@@ -103,6 +103,13 @@ var ErrorOldProtocolVersion = errors.New("old protocol version")
 func New(r io.ReaderAt) (*BootParam, error) {
 	b := &BootParam{}
 
+	// setupHeaderOffset/setupHeaderMaxSize describe where the kernel's
+	// setup header lives within the bzImage.
+	const (
+		setupHeaderOffset  = 0x1f1
+		setupHeaderMaxSize = 0x1000
+	)
+
 	// In 64-bit boot protocol, the first step in loading a Linux kernel should be
 	// to setup the boot parameters (struct boot_params, traditionally known as
 	// "zero page"). The memory for struct boot_params could be allocated anywhere
@@ -111,7 +118,7 @@ func New(r io.ReaderAt) (*BootParam, error) {
 	// and examined.
 	//
 	// refs: https://www.kernel.org/doc/html/latest/x86/boot.html#id1
-	reader := io.NewSectionReader(r, 0x1f1, 0x1000)
+	reader := io.NewSectionReader(r, setupHeaderOffset, setupHeaderMaxSize)
 	if err := binary.Read(reader, binary.LittleEndian, &(b.Hdr)); err != nil {
 		return b, err
 	}
@@ -123,13 +130,17 @@ func New(r io.ReaderAt) (*BootParam, error) {
 	return b, nil
 }
 
+// minBootProtocolVersion is the minimum Linux boot protocol version
+// (2.06) this loader supports.
+const minBootProtocolVersion = 0x0206
+
 func (b *BootParam) isValid() error {
 	if b.Hdr.Header != MagicSignature {
 		return ErrorSignatureNotMatch
 	}
 
 	// Protocol 2.06+ is required.
-	if b.Hdr.Version < 0x0206 {
+	if b.Hdr.Version < minBootProtocolVersion {
 		return fmt.Errorf("%w: 0x%x", ErrorOldProtocolVersion, b.Hdr.Version)
 	}
 

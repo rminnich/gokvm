@@ -20,8 +20,15 @@ const (
 	// https://github.com/kvmtool/kvmtool/blob/415f92c33a227c02f6719d4594af6fad10f07abf/include/kvm/apic.h#L9
 	apicBaseAddrStep = 0x00400000
 
-	mpfIntelSignature = (('_' << 24) | ('P' << 16) | ('M' << 8) | '_')
-	mpcTableSignature = (('P' << 24) | ('M' << 16) | ('C' << 8) | 'P')
+	// topByteShift/thirdByteShift/secondByteShift position the first
+	// three characters of a 4-byte, big-endian-style ASCII signature
+	// (see mpfIntelSignature/mpcTableSignature below) within a uint32.
+	topByteShift    = 24
+	thirdByteShift  = 16
+	secondByteShift = 8
+
+	mpfIntelSignature = (('_' << topByteShift) | ('P' << thirdByteShift) | ('M' << secondByteShift) | '_')
+	mpcTableSignature = (('P' << topByteShift) | ('M' << thirdByteShift) | ('C' << secondByteShift) | 'P')
 
 	// see Table 4-3. Base MP Configuration Table Entry Types in Intel MP Configuration
 	// https://pdos.csail.mit.edu/6.828/2014/readings/ia32/MPspec.pdf
@@ -36,10 +43,37 @@ const (
 	cpuFeatureAPIC = uint32(0x200)
 	cpuFeatureFPU  = uint32(0x001)
 
+	// cpuSteppingShift places cpuStepping into the correct bit position
+	// within mpcCPU.sig (the CPUID signature field).
+	cpuSteppingShift = 16
+
 	mpAPICVersion = uint8(0x14)
+
+	// mpfIntelPhysPtrOffset is the offset, from the start of the EBDA,
+	// of the MP Configuration Table pointed to by the MP Floating
+	// Pointer Structure.
+	mpfIntelPhysPtrOffset = 0x40
+
+	// byteMask masks a value down to its low 8 bits; also used, XORed,
+	// to compute the one's-complement byte needed to make an MP table
+	// checksum sum to 0.
+	byteMask = 0xff
 )
 
 var errorVCPUNumExceed = fmt.Errorf("the number of vCPUs must be less than or equal to %d", maxVCPUs)
+
+// u8 truncates v to its low 8 bits. Used for the one's-complement MP
+// table checksum (always masked to a byte) and other intentionally
+// byte-sized derived values below.
+func u8(v uint32) uint8 {
+	return uint8(v) //nolint:gosec // intentional truncation to a checksum/ID byte
+}
+
+// u8FromInt truncates a small, known-non-negative int (an APIC/CPU
+// index, always well below 256) to uint8.
+func u8FromInt(v int) uint8 {
+	return uint8(v) //nolint:gosec // v is a small CPU index, always < maxVCPUs
+}
 
 type (
 	// Extended BIOS Data Area (EBDA).
@@ -121,7 +155,7 @@ func newMPFIntel() (*mpfIntel, error) {
 	m.signature = mpfIntelSignature
 	m.length = 1 // this must be 1
 	m.specification = 4
-	m.physPtr = bootparam.EBDAStart + 0x40
+	m.physPtr = bootparam.EBDAStart + mpfIntelPhysPtrOffset
 
 	var err error
 
@@ -130,7 +164,7 @@ func newMPFIntel() (*mpfIntel, error) {
 		return m, err
 	}
 
-	m.checkSum ^= uint8(0xff)
+	m.checkSum ^= u8(byteMask)
 	m.checkSum++
 
 	return m, nil
@@ -147,7 +181,7 @@ func (m *mpfIntel) calcCheckSum() (uint8, error) {
 		tmp += uint32(b)
 	}
 
-	return uint8(tmp & 0xff), nil
+	return u8(tmp & byteMask), nil
 }
 
 func (m *mpfIntel) bytes() ([]byte, error) {
@@ -179,7 +213,7 @@ func newMPCTable(nCPUs int) (*mpcTable, error) {
 
 	var err error
 
-	for i := 0; i < nCPUs; i++ {
+	for i := range nCPUs {
 		m.mpcCPU[i] = *newMPCCpu(i)
 	}
 
@@ -188,7 +222,7 @@ func newMPCTable(nCPUs int) (*mpcTable, error) {
 		return m, err
 	}
 
-	m.checkSum ^= uint8(0xff)
+	m.checkSum ^= u8(byteMask)
 	m.checkSum++
 
 	return m, nil
@@ -205,7 +239,7 @@ func (m *mpcTable) calcCheckSum() (uint8, error) {
 		tmp += uint32(b)
 	}
 
-	return uint8(tmp & 0xff), nil
+	return u8(tmp & byteMask), nil
 }
 
 func (m *mpcTable) bytes() ([]byte, error) {
@@ -238,10 +272,10 @@ func newMPCCpu(i int) *mpcCPU {
 	}
 
 	m.typ = mpEntryTypeProcessor
-	m.apicID = uint8(i)
+	m.apicID = u8FromInt(i)
 	m.apicVer = mpAPICVersion
 	m.cpuFlag = f
-	m.sig = (cpuStepping << 16)
+	m.sig = (cpuStepping << cpuSteppingShift)
 	m.featureFlag = cpuFeatureAPIC | cpuFeatureFPU
 
 	return m
