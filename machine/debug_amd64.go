@@ -22,6 +22,21 @@ var ErrBadArg = errors.New("arg count must be in range 1..6")
 // e.g. code expected a Mem but got an Imm.
 var ErrBadArgType = errors.New("bad arg type")
 
+// maxX86InstLen is the buffer size used to read a not-yet-decoded x86
+// instruction from guest memory (the true x86 max instruction length
+// is 15 bytes).
+const maxX86InstLen = 16
+
+// x86Mode64Bit selects 64-bit decode mode for x86asm.Decode.
+const x86Mode64Bit = 64
+
+// toU64FromI64 widens a signed memory-operand displacement (always
+// well within the addressable range for any realistic guest) to
+// uint64 for pointer arithmetic.
+func toU64FromI64(v int64) uint64 {
+	return uint64(v) //nolint:gosec // v is a small memory-operand displacement
+}
+
 // Args returns the top nargs args, going down the stack if needed. The max is 6.
 // This is UEFI calling convention.
 func (m *Machine) Args(cpu int, r *kvm.Regs, nargs int) ([]uintptr, error) {
@@ -34,31 +49,40 @@ func (m *Machine) Args(cpu int, r *kvm.Regs, nargs int) ([]uintptr, error) {
 
 	sp := r.RSP
 
+	// stackArg5Offset/stackArg6Offset are the stack offsets of the 5th
+	// and 6th arguments per the UEFI (Microsoft x64) calling
+	// convention: after the 4-register home space, args spill to the
+	// stack at increasing 8-byte offsets from RSP.
+	const (
+		stackArg5Offset = 0x28
+		stackArg6Offset = 0x30
+	)
+
 	switch nargs {
-	case 6:
-		w1, err := m.ReadWord(cpu, sp+0x28)
+	case 6: //nolint:mnd // case values are exactly the (self-explanatory) arg count, 1..6
+		w1, err := m.ReadWord(cpu, sp+stackArg5Offset)
 		if err != nil {
 			return nil, err
 		}
 
-		w2, err := m.ReadWord(cpu, sp+0x30)
+		w2, err := m.ReadWord(cpu, sp+stackArg6Offset)
 		if err != nil {
 			return nil, err
 		}
 
 		return []uintptr{uintptr(r.RCX), uintptr(r.RDX), uintptr(r.R8), uintptr(r.R9), uintptr(w1), uintptr(w2)}, nil
-	case 5:
-		w1, err := m.ReadWord(cpu, sp+0x28)
+	case 5: //nolint:mnd
+		w1, err := m.ReadWord(cpu, sp+stackArg5Offset)
 		if err != nil {
 			return nil, err
 		}
 
 		return []uintptr{uintptr(r.RCX), uintptr(r.RDX), uintptr(r.R8), uintptr(r.R9), uintptr(w1)}, nil
-	case 4:
+	case 4: //nolint:mnd
 		return []uintptr{uintptr(r.RCX), uintptr(r.RDX), uintptr(r.R8), uintptr(r.R9)}, nil
-	case 3:
+	case 3: //nolint:mnd
 		return []uintptr{uintptr(r.RCX), uintptr(r.RDX), uintptr(r.R8)}, nil
-	case 2:
+	case 2: //nolint:mnd
 		return []uintptr{uintptr(r.RCX), uintptr(r.RDX)}, nil
 	case 1:
 		return []uintptr{uintptr(r.RCX)}, nil
@@ -95,7 +119,7 @@ func (m *Machine) Pointer(inst *x86asm.Inst, r *kvm.Regs, arg uint) (uintptr, er
 		return 0, fmt.Errorf("base reg %v in %v:%w", mem.Base, mem, ErrBadRegister)
 	}
 
-	addr := *b + uint64(mem.Disp)
+	addr := *b + toU64FromI64(mem.Disp)
 
 	x, err := GetReg(r, mem.Index)
 	if err == nil {
@@ -134,12 +158,12 @@ func (m *Machine) Inst(cpu int) (*x86asm.Inst, *kvm.Regs, string, error) {
 
 	// debug("Inst: pc %#x, sp %#x", pc, sp)
 	// We know the PC; grab a bunch of bytes there, then decode and print
-	insn := make([]byte, 16)
+	insn := make([]byte, maxX86InstLen)
 	if _, err := m.ReadBytes(cpu, insn, pc); err != nil {
 		return nil, nil, "", fmt.Errorf("reading PC at #%x:%w", pc, err)
 	}
 
-	d, err := x86asm.Decode(insn, 64)
+	d, err := x86asm.Decode(insn, x86Mode64Bit)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("decoding %#02x:%w", insn, err)
 	}
@@ -154,7 +178,7 @@ func Asm(d *x86asm.Inst, pc uint64) string {
 
 // CallInfo provides calling info for a function.
 func CallInfo(inst *x86asm.Inst, r *kvm.Regs) string {
-	l := fmt.Sprintf("%s[", show("", r))
+	l := show("", r) + "["
 	for _, a := range inst.Args {
 		l += fmt.Sprintf("%v,", a)
 	}

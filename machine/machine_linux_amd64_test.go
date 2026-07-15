@@ -27,6 +27,12 @@ type syncBuf struct {
 	buf bytes.Buffer
 }
 
+// regIndexU64 widens a small, known-non-negative test loop index to
+// uint64.
+func regIndexU64(i int) uint64 {
+	return uint64(i) //nolint:gosec // i is a small test-table index
+}
+
 func (b *syncBuf) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -134,7 +140,7 @@ func copyVDAImg(t *testing.T) string {
 	}
 	defer src.Close()
 
-	dst, err := os.CreateTemp("",
+	dst, err := os.CreateTemp(t.TempDir(),
 		"vda-"+filepath.Base(t.Name())+"-*.img")
 	if err != nil {
 		t.Fatal(err)
@@ -782,7 +788,7 @@ func TestGetReg(t *testing.T) { // nolint:paralleltest
 			t.Errorf("GetReg(r, %#x): got %v, want nil", regs[i], err)
 		}
 
-		if *v != uint64(i+1) {
+		if *v != regIndexU64(i+1) {
 			t.Errorf("Reg %#x: got %#x, want %#x", i, *v, i+1)
 		}
 	}

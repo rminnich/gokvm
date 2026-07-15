@@ -42,6 +42,11 @@ const (
 	pageTableBase = 0x30_000
 )
 
+// from the Intel SDM; the bit numbers ARE the meaningful, named
+// constant here, and decomposing them into a second layer of named
+// "bit position" constants would add indirection without clarity.
+//
+//nolint:mnd // these are well-known x86 CR0/CR4/EFER/PDE64 bit positions
 const (
 	// These *could* be in kvm, but we'll see.
 
@@ -110,17 +115,195 @@ const (
 )
 
 // ErrWriteToCF9 indicates a write to cf9, the standard x86 reset port.
-var ErrWriteToCF9 = fmt.Errorf("power cycle via 0xcf9")
+var ErrWriteToCF9 = errors.New("power cycle via 0xcf9")
 
 // ErrBadCPU indicates a cpu number is invalid.
-var ErrBadCPU = fmt.Errorf("bad cpu number")
+var ErrBadCPU = errors.New("bad cpu number")
 
 // ErrUnsupported indicates something we do not yet do.
-var ErrUnsupported = fmt.Errorf("unsupported")
+var ErrUnsupported = errors.New("unsupported")
 
-var ErrNotELF64File = fmt.Errorf("file is not ELF64")
+var ErrNotELF64File = errors.New("file is not ELF64")
 
-var errPTNoteHasNoFSize = fmt.Errorf("elf programm PT_NOTE has file size equel zero")
+var errPTNoteHasNoFSize = errors.New("elf programm PT_NOTE has file size equel zero")
+
+// IO port ranges registered by registerIOPorts below. Addresses are
+// standard x86 platform conventions; see the comments at each
+// registerIOPortHandler call site for what each range is.
+const (
+	ioPortAllStart = 0
+	ioPortAllEnd   = 0x10000
+
+	ioPortCF9Start = 0xcf9
+	ioPortCF9End   = 0xcfa
+
+	ioPortVGA1Start = 0x3c0
+	ioPortVGA1End   = 0x3db
+	ioPortVGA2Start = 0x3b4
+	ioPortVGA2End   = 0x3b6
+
+	ioPortSerial2Start = 0x2f8
+	ioPortSerial2End   = 0x300
+	ioPortSerial3Start = 0x3e8
+	ioPortSerial3End   = 0x3f0
+	ioPortSerial4Start = 0x2e8
+	ioPortSerial4End   = 0x2f0
+
+	ioPortUnknown1Start = 0xcfe
+	ioPortUnknown1End   = 0xcff
+	ioPortUnknown2Start = 0xcfa
+	ioPortUnknown2End   = 0xcfc
+
+	ioPortPCIConfigMech2Start = 0xc000
+	ioPortPCIConfigMech2End   = 0xd000
+
+	ioPortPS2Start = 0x60
+	ioPortPS2End   = 0x70
+
+	ioPortDelayStart = 0xed
+	ioPortDelayEnd   = 0xee
+
+	ioPortPCIConfAddrStart = 0xcf8
+	ioPortPCIConfAddrEnd   = 0xcf9
+	ioPortPCIConfDataStart = 0xcfc
+	ioPortPCIConfDataEnd   = 0xd00
+
+	// serialPortWidth is the size, in IO ports, of one 16550-compatible
+	// UART's register range.
+	serialPortWidth = 8
+
+	// dmaPageRegPort is the DMA Page Registers IO port (Commonly the
+	// 74LS612 chip); PVH and Linux boot register a different size for
+	// the range.
+	dmaPageRegPort      = 0x80
+	dmaPageRegSizePVH   = 0x30
+	dmaPageRegSizeLinux = 0xA0
+
+	// cmosMemBelow4GPVH/cmosMemBelow4GLinux are the "memory below 4G"
+	// CMOS values registered by the PVH and Linux boot paths,
+	// respectively.
+	cmosMemBelow4GPVH   = 0xC000000
+	cmosMemBelow4GLinux = 0xC000_0000
+
+	// bootSectorSize is the size, in bytes, of one disk/boot sector,
+	// used to locate the 32-bit kernel code within a bzImage.
+	bootSectorSize = 512
+
+	// rflagsAlwaysSetBit is RFLAGS bit 1, which the x86 architecture
+	// requires to always read as 1.
+	rflagsAlwaysSetBit = 2
+
+	// segLimitFull32 is a 32-bit segment limit covering the full 4 GiB
+	// address space (with G=1, i.e. page granularity).
+	segLimitFull32 = 0xffffffff
+
+	// pageTablesRegionSize is the size of the scratch region used for
+	// the long-mode PML4/PDPT/PD page tables built below.
+	pageTablesRegionSize = 0x6000
+
+	// byteShift8/16/24 extract the 2nd/3rd/4th byte of a little-endian
+	// value; byteMask masks a single byte.
+	byteShift8  = 8
+	byteShift16 = 16
+	byteShift24 = 24
+	byteMask    = 0xff
+
+	// bytesPerPTE is the size, in bytes, of one page-table entry slot
+	// within the byte-serialized page tables below.
+	bytesPerPTE = 8
+
+	// pageSize4K is the standard x86 4 KiB page size.
+	pageSize4K = 0x1000
+
+	// pml4EntryFlags/pdptEntryFlags/pde2MFlags are the low-byte flag
+	// bits of a PML4/PDPT/2M-PD page-table entry: present(0x1) |
+	// read-write(0x2) | [accessed/dirty(0x60)] | [page-size(0x80)].
+	pml4EntryFlags = 0x03
+	pdptEntryFlags = 0x63
+	pde2MFlags     = 0xe3
+
+	// pdptPageOffset points a PML4 entry at the next page (the PDPT).
+	pdptPageOffset = 0x10
+
+	// numPDPTEntries is the number of PDPT entries (pointers to 2M page
+	// tables) set up below.
+	numPDPTEntries = 4
+
+	// pdEntriesOffset is the byte offset, within the page-tables
+	// region, where the 2M page-directory entries begin.
+	pdEntriesOffset = 0x2000
+
+	// fourGiB/twoMiB bound and step the loop that builds 2M page-table
+	// entries covering the full 32-bit address space.
+	fourGiB = 0x1_0000_0000
+	twoMiB  = 0x2_00_000
+
+	// gdtEntryShift converts a GDT table index into a segment selector
+	// (index * 8, the size of one GDT entry).
+	gdtEntryShift = 3
+
+	// codeSegIndex/dataSegIndex are the GDT table indices used for the
+	// flat code/data segments below.
+	codeSegIndex = 1
+	dataSegIndex = 2
+
+	// segTypeCodeExecReadAccessed/segTypeDataReadWriteAccessed are
+	// standard x86 segment-descriptor Type field values.
+	segTypeCodeExecReadAccessed  = 11
+	segTypeDataReadWriteAccessed = 3
+
+	// maxCPUIDEntries is the number of kvm.CPUIDEntry2 slots to
+	// allocate for KVM_GET_SUPPORTED_CPUID; the kernel returns E2BIG
+	// if more entries than this are available, but 100 is comfortably
+	// above any real CPU's supported-leaf count.
+	maxCPUIDEntries = 100
+
+	// cpuidLeafExtendedFeatures is CPUID leaf 7 (Structured Extended
+	// Feature Flags).
+	cpuidLeafExtendedFeatures = 7
+
+	// fsrmBit is the bit position of X86_FEATURE_FSRM (Fast Short Rep
+	// Mov) within CPUID leaf 7's EDX register.
+	fsrmBit = 4
+
+	// maxIOPortIOSize is the maximum number of bytes an IO-port
+	// instruction's "count" (REP prefix) can transfer in one exit,
+	// bounding the byte slice reinterpreted from guest memory.
+	maxIOPortIOSize = 100
+)
+
+// The helpers below centralize narrowing/widening integer conversions
+// that are safe by construction in this file: guest memory sizes,
+// initrd/ELF/kernel offsets and sizes, and small fixed-count loop
+// bounds all fit comfortably within their target width for any
+// realistic VM configuration. Centralizing them here addresses
+// gosec's G115 (integer overflow conversion) in one place instead of
+// scattering nolint comments at each call site.
+
+// toU64 widens a non-negative int (a byte count, size, or offset) to uint64.
+func toU64(v int) uint64 {
+	return uint64(v) //nolint:gosec // v is a non-negative size/offset
+}
+
+// toU32 narrows a non-negative int (a small count or size) to uint32.
+func toU32(v int) uint32 {
+	return uint32(v) //nolint:gosec // v is a small, non-negative count/size
+}
+
+// toInt narrows a uint64 (a small count or size) to int.
+func toInt(v uint64) int {
+	return int(v) //nolint:gosec // v is a small count/size
+}
+
+// toI64 widens a uint64 (a physical address, always well below 2^63) to int64.
+func toI64(v uint64) int64 {
+	return int64(v) //nolint:gosec // v is a physical address, always < 2^63
+}
+
+// toU8 narrows a uint64 (a byte of a page-table entry/address) to uint8.
+func toU8(v uint64) uint8 {
+	return uint8(v) //nolint:gosec // v is masked to a single byte at each call site
+}
 
 type Machine struct {
 	kvmFd, vmFd    uintptr
@@ -272,9 +455,16 @@ func (m *Machine) RunData() []*kvm.RunData {
 }
 
 func (m *Machine) LoadPVH(kern, initrd *os.File, cmdline string) error {
+	// edbaShift/edbaBufSize describe the 16-byte-paragraph to byte-offset
+	// conversion and buffer size used to write the EBDA pointer.
+	const (
+		edbaShift   = 4
+		edbaBufSize = 4
+	)
+
 	// Set EDBA-Pointer
-	edbaval := uint32(bootparam.EBDAStart >> 4)
-	edbabytes := make([]byte, 4)
+	edbaval := uint32(bootparam.EBDAStart >> edbaShift)
+	edbabytes := make([]byte, edbaBufSize)
 
 	// Convert EBDA-Address to bytes
 	binary.LittleEndian.PutUint32(edbabytes, edbaval)
@@ -358,7 +548,7 @@ func (m *Machine) LoadPVH(kern, initrd *os.File, cmdline string) error {
 		copy(m.mem[cmdlineAddr:], cmdline)
 		m.mem[cmdlineAddr+len(cmdline)] = 0 // for null terminated string
 
-		ramdiskmod := pvh.NewModListEntry(initrdAddr, uint64(initrdSize), 0)
+		ramdiskmod := pvh.NewModListEntry(initrdAddr, toU64(initrdSize), 0)
 
 		pvhstartinfo.NrModules += 1
 		pvhstartinfo.ModlistPAddr = pvh.PVHModlistStart
@@ -370,7 +560,7 @@ func (m *Machine) LoadPVH(kern, initrd *os.File, cmdline string) error {
 
 		copy(m.mem[pvh.PVHModlistStart:], ramdiskmodbytes)
 
-		m.AddDevice(&iodev.Noop{Port: 0x80, Psize: 0x30}) // DMA Page Registers (Commonly 74L612 Chip)
+		m.AddDevice(&iodev.Noop{Port: dmaPageRegPort, Psize: dmaPageRegSizePVH}) // DMA Page Registers (Commonly 74L612 Chip)
 	} else {
 		m.AddDevice(&iodev.PostCode{}) // Port 0x80
 	}
@@ -385,12 +575,12 @@ func (m *Machine) LoadPVH(kern, initrd *os.File, cmdline string) error {
 
 	entry := pvh.NewMemMapTableEntry(
 		pvh.HighRAMStart,
-		uint64(len(m.mem)-pvh.HighRAMStart),
+		toU64(len(m.mem)-pvh.HighRAMStart),
 		bootparam.E820Ram)
 
 	memmapentries = append(memmapentries, entry)
 
-	pvhstartinfo.MemMapEntries = uint32(len(memmapentries))
+	pvhstartinfo.MemMapEntries = toU32(len(memmapentries))
 
 	memOffset := pvh.PVHMemMapStart
 
@@ -419,7 +609,7 @@ func (m *Machine) LoadPVH(kern, initrd *os.File, cmdline string) error {
 	}
 
 	m.AddDevice(&iodev.FWDebug{}) // Port 0x402
-	m.AddDevice(iodev.NewCMOS(0xC000000, 0x0))
+	m.AddDevice(iodev.NewCMOS(cmosMemBelow4GPVH, 0))
 	m.AddDevice(iodev.NewACPIPMTimer())
 	m.initIOPortHandlers()
 
@@ -497,19 +687,19 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 	)
 	bootParam.AddE820Entry(
 		highMemBase,
-		uint64(len(m.mem)-highMemBase),
+		toU64(len(m.mem)-highMemBase),
 		bootparam.E820Ram,
 	)
 
 	bootParam.Hdr.VidMode = 0xFFFF                                                                  // Proto ALL
 	bootParam.Hdr.TypeOfLoader = 0xFF                                                               // Proto 2.00+
 	bootParam.Hdr.RamdiskImage = initrdAddr                                                         // Proto 2.00+
-	bootParam.Hdr.RamdiskSize = uint32(initrdSize)                                                  // Proto 2.00+
+	bootParam.Hdr.RamdiskSize = toU32(initrdSize)                                                   // Proto 2.00+
 	bootParam.Hdr.LoadFlags |= bootparam.CanUseHeap | bootparam.LoadedHigh | bootparam.KeepSegments // Proto 2.00+
 	bootParam.Hdr.HeapEndPtr = 0xFE00                                                               // Proto 2.01+
 	bootParam.Hdr.ExtLoaderVer = 0                                                                  // Proto 2.02+
 	bootParam.Hdr.CmdlinePtr = cmdlineAddr                                                          // Proto 2.06+
-	bootParam.Hdr.CmdlineSize = uint32(len(params) + 1)                                             // Proto 2.06+
+	bootParam.Hdr.CmdlineSize = toU32(len(params) + 1)                                              // Proto 2.06+
 
 	bytes, err = bootParam.Bytes()
 	if err != nil {
@@ -533,7 +723,7 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 		// be loaded at address 0x10000 for Image/zImage kernels and highMemBase for bzImage kernels.
 		//
 		// refs: https://www.kernel.org/doc/html/latest/x86/boot.html#loading-the-rest-of-the-kernel
-		setupsz := int(bootParam.Hdr.SetupSects+1) * 512
+		setupsz := int(bootParam.Hdr.SetupSects+1) * bootSectorSize
 
 		kernSize, err = kernel.ReadAt(m.mem[DefaultKernelAddr:], int64(setupsz))
 
@@ -555,7 +745,7 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 			log.Printf("Load elf segment @%#x from file %#x %#x bytes", p.Paddr, p.Off, p.Filesz)
 
 			n, err := p.ReadAt(m.mem[p.Paddr:], 0)
-			if !errors.Is(err, io.EOF) || uint64(n) != p.Filesz {
+			if !errors.Is(err, io.EOF) || toU64(n) != p.Filesz {
 				return fmt.Errorf("reading ELF prog %d@%#x: %d/%d bytes, err %w", i, p.Paddr, n, p.Filesz, err)
 			}
 
@@ -575,8 +765,8 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 		return err
 	}
 
-	m.AddDevice(iodev.NewCMOS(0xC000_0000, 0x0))
-	m.AddDevice(&iodev.Noop{Port: 0x80, Psize: 0xA0})
+	m.AddDevice(iodev.NewCMOS(cmosMemBelow4GLinux, 0))
+	m.AddDevice(&iodev.Noop{Port: dmaPageRegPort, Psize: dmaPageRegSizeLinux})
 	m.initIOPortHandlers()
 
 	return nil
@@ -634,7 +824,7 @@ func (m *Machine) initRegs(vcpufd uintptr, rip, bp uint64) error {
 	}
 
 	// Clear all FLAGS bits, except bit 1 which is always set.
-	regs.RFLAGS = 2
+	regs.RFLAGS = rflagsAlwaysSetBit
 	regs.RIP = rip
 	// Create stack which will grow down.
 	regs.RSI = bp
@@ -654,12 +844,12 @@ func (m *Machine) initSregs(vcpufd uintptr, amd64 bool) error {
 
 	if !amd64 {
 		// set all segment flat
-		sregs.CS.Base, sregs.CS.Limit, sregs.CS.G = 0, 0xFFFFFFFF, 1
-		sregs.DS.Base, sregs.DS.Limit, sregs.DS.G = 0, 0xFFFFFFFF, 1
-		sregs.FS.Base, sregs.FS.Limit, sregs.FS.G = 0, 0xFFFFFFFF, 1
-		sregs.GS.Base, sregs.GS.Limit, sregs.GS.G = 0, 0xFFFFFFFF, 1
-		sregs.ES.Base, sregs.ES.Limit, sregs.ES.G = 0, 0xFFFFFFFF, 1
-		sregs.SS.Base, sregs.SS.Limit, sregs.SS.G = 0, 0xFFFFFFFF, 1
+		sregs.CS.Base, sregs.CS.Limit, sregs.CS.G = 0, segLimitFull32, 1
+		sregs.DS.Base, sregs.DS.Limit, sregs.DS.G = 0, segLimitFull32, 1
+		sregs.FS.Base, sregs.FS.Limit, sregs.FS.G = 0, segLimitFull32, 1
+		sregs.GS.Base, sregs.GS.Limit, sregs.GS.G = 0, segLimitFull32, 1
+		sregs.ES.Base, sregs.ES.Limit, sregs.ES.G = 0, segLimitFull32, 1
+		sregs.SS.Base, sregs.SS.Limit, sregs.SS.G = 0, segLimitFull32, 1
 
 		sregs.CS.DB, sregs.SS.DB = 1, 1
 		sregs.CR0 |= 1 // protected mode
@@ -671,7 +861,7 @@ func (m *Machine) initSregs(vcpufd uintptr, amd64 bool) error {
 		return nil
 	}
 
-	high64k := m.mem[pageTableBase : pageTableBase+0x6000]
+	high64k := m.mem[pageTableBase : pageTableBase+pageTablesRegionSize]
 
 	// zero out the page tables.
 	// but we might in fact want to poison them?
@@ -692,36 +882,41 @@ func (m *Machine) initSregs(vcpufd uintptr, amd64 bool) error {
 	// golangci-lint claims this file has not been go-fumpt-ed
 	// but it has.
 	copy(high64k, []byte{
-		0x03,
-		0x10 | uint8((pageTableBase>>8)&0xff),
-		uint8((pageTableBase >> 16) & 0xff),
-		uint8((pageTableBase >> 24) & 0xff), 0, 0, 0, 0,
+		pml4EntryFlags,
+		pdptPageOffset | toU8((pageTableBase>>byteShift8)&byteMask),
+		toU8((pageTableBase >> byteShift16) & byteMask),
+		toU8((pageTableBase >> byteShift24) & byteMask), 0, 0, 0, 0,
 	})
 	// need four pointers to 2M page tables -- PHYSICAL addresses:
 	// 0x2000, 0x3000, 0x4000, 0x5000
 	// experiment: set PS bit
 	// Don't.
-	for i := uint64(0); i < 4; i++ {
-		ptb := pageTableBase + (i+2)*0x1000
+	for i := range uint64(numPDPTEntries) {
+		// pml4PagesBeforePD accounts for the PML4 (1 page) and PDPT (1
+		// page) that precede the 2M page-directory pages in this
+		// region's layout.
+		const pml4PagesBeforePD = 2
+
+		ptb := pageTableBase + (i+pml4PagesBeforePD)*pageSize4K
 		// Another coding anti-pattern
-		copy(high64k[int(i*8)+0x1000:],
+		copy(high64k[toInt(i*bytesPerPTE)+pageSize4K:],
 			[]byte{
-				/*0x80 |*/ 0x63,
-				uint8((ptb >> 8) & 0xff),
-				uint8((ptb >> 16) & 0xff),
-				uint8((ptb >> 24) & 0xff), 0, 0, 0, 0,
+				/*0x80 |*/ pdptEntryFlags,
+				toU8((ptb >> byteShift8) & byteMask),
+				toU8((ptb >> byteShift16) & byteMask),
+				toU8((ptb >> byteShift24) & byteMask), 0, 0, 0, 0,
 			})
 	}
 	// Now the 2M pages.
-	for i := uint64(0); i < 0x1_0000_0000; i += 0x2_00_000 {
-		ptb := i | 0xe3
-		ix := int((i/0x2_00_000)*8 + 0x2000)
+	for i := uint64(0); i < fourGiB; i += twoMiB {
+		ptb := i | pde2MFlags
+		ix := toInt((i/twoMiB)*bytesPerPTE) + pdEntriesOffset
 		// another coding anti-pattern from golangci-lint.
 		copy(high64k[ix:], []byte{
-			uint8(ptb),
-			uint8((ptb >> 8) & 0xff),
-			uint8((ptb >> 16) & 0xff),
-			uint8((ptb >> 24) & 0xff), 0, 0, 0, 0,
+			toU8(ptb),
+			toU8((ptb >> byteShift8) & byteMask),
+			toU8((ptb >> byteShift16) & byteMask),
+			toU8((ptb >> byteShift24) & byteMask), 0, 0, 0, 0,
 		})
 	}
 
@@ -737,9 +932,9 @@ func (m *Machine) initSregs(vcpufd uintptr, amd64 bool) error {
 
 	seg := kvm.Segment{
 		Base:     0,
-		Limit:    0xffffffff,
-		Selector: 1 << 3,
-		Typ:      11, /* Code: execute, read, accessed */
+		Limit:    segLimitFull32,
+		Selector: codeSegIndex << gdtEntryShift,
+		Typ:      segTypeCodeExecReadAccessed,
 		Present:  1,
 		DPL:      0,
 		DB:       0,
@@ -751,8 +946,8 @@ func (m *Machine) initSregs(vcpufd uintptr, amd64 bool) error {
 
 	sregs.CS = seg
 
-	seg.Typ = 3 /* Data: read/write, accessed */
-	seg.Selector = 2 << 3
+	seg.Typ = segTypeDataReadWriteAccessed
+	seg.Selector = dataSegIndex << gdtEntryShift
 	sregs.DS, sregs.ES, sregs.FS, sregs.GS, sregs.SS = seg, seg, seg, seg, seg
 
 	if err := kvm.SetSregs(vcpufd, sregs); err != nil {
@@ -764,8 +959,8 @@ func (m *Machine) initSregs(vcpufd uintptr, amd64 bool) error {
 
 func (m *Machine) initCPUID(cpu int) error {
 	cpuid := kvm.CPUID{
-		Nent:    100,
-		Entries: make([]kvm.CPUIDEntry2, 100),
+		Nent:    maxCPUIDEntries,
+		Entries: make([]kvm.CPUIDEntry2, maxCPUIDEntries),
 	}
 
 	if err := kvm.GetSupportedCPUID(m.kvmFd, &cpuid); err != nil {
@@ -773,7 +968,7 @@ func (m *Machine) initCPUID(cpu int) error {
 	}
 
 	// https://www.kernel.org/doc/html/latest/virt/kvm/cpuid.html
-	for i := 0; i < int(cpuid.Nent); i++ {
+	for i := range toInt(uint64(cpuid.Nent)) {
 		switch cpuid.Entries[i].Function {
 		case kvm.CPUIDFuncPerMon:
 			cpuid.Entries[i].Eax = 0 // disable
@@ -784,9 +979,9 @@ func (m *Machine) initCPUID(cpu int) error {
 			cpuid.Entries[i].Ecx = 0x564b4d56 // VMKV
 			cpuid.Entries[i].Edx = 0x4d       // M
 
-		case 7:
+		case cpuidLeafExtendedFeatures:
 			// Unset X86_FEATURE_FSRM (Fast Short Rep Mov)
-			cpuid.Entries[i].Edx &= ^(uint32(1) << 4)
+			cpuid.Entries[i].Edx &= ^(uint32(1) << fsrmBit)
 
 		default:
 			continue
@@ -871,8 +1066,8 @@ func (m *Machine) RunOnce(cpu int) (bool, error) {
 		direction, size, port, count, offset := m.runs[cpu].IO()
 		f := m.ioportHandlers[port][direction]
 
-		bytes := (*(*[100]byte)(unsafe.Pointer(uintptr(unsafe.Pointer(m.runs[cpu])) + uintptr(offset))))[0:size]
-		for i := 0; i < int(count); i++ {
+		bytes := (*(*[maxIOPortIOSize]byte)(unsafe.Pointer(uintptr(unsafe.Pointer(m.runs[cpu])) + uintptr(offset))))[0:size]
+		for range toInt(count) {
 			if err := f(port, bytes); err != nil {
 				return false, err
 			}
@@ -976,29 +1171,32 @@ func (m *Machine) initIOPortHandlers() {
 		return nil
 	}
 
-	m.registerIOPortHandler(0, 0x10000, funcError, funcError)    // default handler
-	m.registerIOPortHandler(0xcf9, 0xcfa, funcNone, funcOutbCF9) // CF9
-	m.registerIOPortHandler(0x3c0, 0x3db, funcNone, funcNone)    // VGA
-	m.registerIOPortHandler(0x3b4, 0x3b6, funcNone, funcNone)    // VGA
-	m.registerIOPortHandler(0x2f8, 0x300, funcNone, funcNone)    // Serial port 2
-	m.registerIOPortHandler(0x3e8, 0x3f0, funcNone, funcNone)    // Serial port 3
-	m.registerIOPortHandler(0x2e8, 0x2f0, funcNone, funcNone)    // Serial port 4
-	m.registerIOPortHandler(0xcfe, 0xcff, funcNone, funcNone)    // unknown
-	m.registerIOPortHandler(0xcfa, 0xcfc, funcNone, funcNone)    // unknown
-	m.registerIOPortHandler(0xc000, 0xd000, funcNone, funcNone)  // PCI Configuration Space Access Mechanism #2
-	m.registerIOPortHandler(0x60, 0x70, funcInbPS2, funcNone)    // PS/2 Keyboard (Always 8042 Chip)
-	m.registerIOPortHandler(0xed, 0xee, funcNone, funcNone)      // 0xed is the new standard delay port.
+	m.registerIOPortHandler(ioPortAllStart, ioPortAllEnd, funcError, funcError)         // default handler
+	m.registerIOPortHandler(ioPortCF9Start, ioPortCF9End, funcNone, funcOutbCF9)        // CF9
+	m.registerIOPortHandler(ioPortVGA1Start, ioPortVGA1End, funcNone, funcNone)         // VGA
+	m.registerIOPortHandler(ioPortVGA2Start, ioPortVGA2End, funcNone, funcNone)         // VGA
+	m.registerIOPortHandler(ioPortSerial2Start, ioPortSerial2End, funcNone, funcNone)   // Serial port 2
+	m.registerIOPortHandler(ioPortSerial3Start, ioPortSerial3End, funcNone, funcNone)   // Serial port 3
+	m.registerIOPortHandler(ioPortSerial4Start, ioPortSerial4End, funcNone, funcNone)   // Serial port 4
+	m.registerIOPortHandler(ioPortUnknown1Start, ioPortUnknown1End, funcNone, funcNone) // unknown
+	m.registerIOPortHandler(ioPortUnknown2Start, ioPortUnknown2End, funcNone, funcNone) // unknown
+	// PCI Configuration Space Access Mechanism #2
+	m.registerIOPortHandler(ioPortPCIConfigMech2Start, ioPortPCIConfigMech2End, funcNone, funcNone)
+	// PS/2 Keyboard (Always 8042 Chip)
+	m.registerIOPortHandler(ioPortPS2Start, ioPortPS2End, funcInbPS2, funcNone)
+	// 0xed is the new standard delay port.
+	m.registerIOPortHandler(ioPortDelayStart, ioPortDelayEnd, funcNone, funcNone)
 
 	// Serial port 1
-	m.registerIOPortHandler(serial.COM1Addr, serial.COM1Addr+8, m.serial.In, m.serial.Out)
+	m.registerIOPortHandler(serial.COM1Addr, serial.COM1Addr+serialPortWidth, m.serial.In, m.serial.Out)
 
 	// PCI configuration
 	//
 	// 0xcf8 for address register for PCI Config Space
 	// 0xcfc + 0xcff for data for PCI Config Space
 	// see https://github.com/torvalds/linux/blob/master/arch/x86/pci/direct.c for more detail.
-	m.registerIOPortHandler(0xcf8, 0xcf9, m.pci.PciConfAddrIn, m.pci.PciConfAddrOut)
-	m.registerIOPortHandler(0xcfc, 0xd00, m.pci.PciConfDataIn, m.pci.PciConfDataOut)
+	m.registerIOPortHandler(ioPortPCIConfAddrStart, ioPortPCIConfAddrEnd, m.pci.PciConfAddrIn, m.pci.PciConfAddrOut)
+	m.registerIOPortHandler(ioPortPCIConfDataStart, ioPortPCIConfDataEnd, m.pci.PciConfDataIn, m.pci.PciConfDataOut)
 
 	// IO Devices - non PCI
 	for _, dev := range m.devices {
@@ -1074,7 +1272,7 @@ func showone(indent string, in interface{}) string {
 	s := reflect.ValueOf(in).Elem()
 	typeOfT := s.Type()
 
-	for i := 0; i < s.NumField(); i++ {
+	for i := range s.NumField() {
 		f := s.Field(i)
 		if f.Kind() == reflect.String {
 			ret += fmt.Sprintf(indent+"%s %s = %s\n", typeOfT.Field(i).Name, f.Type(), f.Interface())
@@ -1124,7 +1322,7 @@ func (m *Machine) VtoP(cpu int, vaddr uint64) (int64, error) {
 		return -1, fmt.Errorf("%#x:valid not set:%w", vaddr, ErrBadVA)
 	}
 
-	return int64(t.PhysicalAddress), nil
+	return toI64(t.PhysicalAddress), nil
 }
 
 // GetReg gets a pointer to a register in kvm.Regs, given
@@ -1210,7 +1408,11 @@ func initVMandVCPU(
 ) (uintptr, uintptr, []uintptr, []*kvm.RunData, error) {
 	var err error
 
-	devKVM, err := os.OpenFile(kvmPath, os.O_RDWR, 0o644)
+	// kvmDevMode is unused in practice (O_RDWR without O_CREATE never
+	// creates the device node), but os.OpenFile requires a mode arg.
+	const kvmDevMode = 0o644
+
+	devKVM, err := os.OpenFile(kvmPath, os.O_RDWR, kvmDevMode)
 	if err != nil {
 		return 0, 0, nil, nil, err
 	}
@@ -1245,7 +1447,7 @@ func initVMandVCPU(
 		return 0, 0, nil, nil, err
 	}
 
-	for cpu := 0; cpu < nCpus; cpu++ {
+	for cpu := range nCpus {
 		// Create vCPU
 		vcpuFds[cpu], err = kvm.CreateVCPU(vmFd, cpu)
 		if err != nil {

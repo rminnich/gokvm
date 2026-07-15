@@ -29,11 +29,25 @@ const (
 	// tree, chosen to sit well above where small kernels' text_offset
 	// would place the kernel image.
 	dtbAddr = 0x4000_0000
+
+	// kvmDevMode is unused in practice (O_RDWR without O_CREATE never
+	// creates the device node), but os.OpenFile requires a mode arg.
+	kvmDevMode = 0o644
+
+	// uartRXFEBit is the RXFE (receive FIFO empty) bit position in the
+	// PL011 UARTFR (flag) register.
+	uartRXFEBit = 4
 )
 
 // ErrNotARM64Image indicates the kernel file does not have a valid
 // arm64 Image header magic.
 var ErrNotARM64Image = errors.New("not an arm64 Image kernel (bad magic)")
+
+// toInt narrows a uint64 guest-physical address (always well within
+// int range for any realistic guest memory size) to int.
+func toInt(v uint64) int {
+	return int(v) //nolint:gosec // v is a guest-physical address bounded by guest memory size
+}
 
 // Machine is a minimal arm64/KVM virtual machine: it can create a VM and
 // vcpus, load a raw arm64 Image kernel, and run it, printing any output
@@ -70,7 +84,7 @@ func New(kvmPath string, nCpus int, memSize int) (*Machine, error) {
 
 	m := &Machine{}
 
-	devKVM, err := os.OpenFile(kvmPath, os.O_RDWR, 0o644)
+	devKVM, err := os.OpenFile(kvmPath, os.O_RDWR, kvmDevMode)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +114,7 @@ func New(kvmPath string, nCpus int, memSize int) (*Machine, error) {
 	m.vcpuFds = make([]uintptr, nCpus)
 	m.runs = make([]*kvm.RunData, nCpus)
 
-	for cpu := 0; cpu < nCpus; cpu++ {
+	for cpu := range nCpus {
 		m.vcpuFds[cpu], err = kvm.CreateVCPU(m.vmFd, cpu)
 		if err != nil {
 			return nil, fmt.Errorf("CreateVCPU(%d): %w", cpu, err)
@@ -157,7 +171,7 @@ func (m *Machine) LoadLinux(kernel io.ReaderAt, params string) error {
 	}
 
 	loadAddr := textOffset
-	if int(loadAddr) >= len(m.mem) {
+	if toInt(loadAddr) >= len(m.mem) {
 		return fmt.Errorf("%w: text_offset %#x is beyond guest memory size %#x",
 			ErrBadVA, loadAddr, len(m.mem))
 	}
@@ -222,7 +236,7 @@ func uartMMIO(physAddr, data uint64, length uint32, isWrite bool) uint64 {
 
 	if !isWrite {
 		if offset == uartFlagRegOffset {
-			return 1 << 4 // RXFE
+			return 1 << uartRXFEBit // RXFE
 		}
 
 		return 0
@@ -249,6 +263,7 @@ func (m *Machine) RunOnce(cpu int) (bool, error) {
 
 	exit := kvm.ExitType(m.runs[cpu].ExitReason)
 
+	//exhaustive:ignore // default case below deliberately handles all other exit reasons as an error
 	switch exit {
 	case kvm.EXITHLT, kvm.EXITSHUTDOWN:
 		return false, nil
