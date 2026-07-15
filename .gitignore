@@ -19,6 +19,7 @@ vda.img
 extract-ikconfig
 extract-vmlinux
 CLOUDHV.fd
+virt.dtb
 
 # Test binary, built with `go test -c`
 *.test

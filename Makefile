@@ -28,6 +28,9 @@ vda.img:
 	genext2fs -b 1024 -d ${dir} $@
 	file $@
 
+virt.dtb: $(wildcard dtb/*.go) $(wildcard cmd/dtbgen/*.go)
+	go run ./cmd/dtbgen -o $@
+
 # checkbinaries runs which on all the commands we want to include.
 # Be sure to keep it up to date if you add new commands to the initrd
 # rule below.
@@ -64,6 +67,9 @@ run: initrd bzImage
 	$(MAKE) generate
 	go run . boot -c 4 -i "./initrd"
 
+.PHONY: dtb
+dtb: virt.dtb
+
 .PHONY: runpvh
 runpvh: initrd vmlinux_PVH
 	$(MAKE) generate
@@ -96,7 +102,7 @@ test: bzImage vmlinux vmlinux_PVH initrd vda.img CLOUDHV.fd
 
 .PHONY: clean
 clean:
-	rm -rf ./gokvm ./golangci-lint bzImage* vmlinux* CLOUDHV.fd _linux *_string.go
+	rm -rf ./gokvm ./golangci-lint bzImage* vmlinux* CLOUDHV.fd _linux *_string.go virt.dtb
 
 .PHONY: qemu
 qemu: initrd bzImage

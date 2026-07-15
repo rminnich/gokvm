@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/bobuhiro11/gokvm/dtb"
 	"github.com/bobuhiro11/gokvm/kvm"
 )
 
@@ -24,12 +25,10 @@ const (
 	// field is zero, as permitted for kernels older than v4.6.
 	arm64DefaultTextOffset = 0x80000
 
-	// uartBase/uartSize define the MMIO window of a minimal, PL011-like
-	// UART. Only the data register (offset 0) is implemented: writes are
-	// printed to stdout, reads return 0. This is enough for polled early
-	// console output; it is not a full PL011 emulation.
-	uartBase = 0x0900_0000
-	uartSize = 0x1000
+	// dtbAddr is a fixed guest physical address for the generated device
+	// tree, chosen to sit well above where small kernels' text_offset
+	// would place the kernel image.
+	dtbAddr = 0x4000_0000
 )
 
 // ErrNotARM64Image indicates the kernel file does not have a valid
@@ -172,6 +171,14 @@ func (m *Machine) LoadLinux(kernel io.ReaderAt, params string) error {
 		return err
 	}
 
+	if int(dtbAddr) >= len(m.mem) {
+		return fmt.Errorf("%w: dtb address %#x is beyond guest memory size %#x",
+			ErrBadVA, uint64(dtbAddr), len(m.mem))
+	}
+
+	fdt := dtb.GenerateVirt(uint64(len(m.mem)), len(m.vcpuFds), params)
+	copy(m.mem[dtbAddr:], fdt)
+
 	for _, vcpuFd := range m.vcpuFds {
 		regs, err := kvm.GetRegs(vcpuFd)
 		if err != nil {
@@ -179,7 +186,7 @@ func (m *Machine) LoadLinux(kernel io.ReaderAt, params string) error {
 		}
 
 		regs.PC = loadAddr
-		regs.Regs[0] = 0 // X0: dtb physical address, 0 == none provided
+		regs.Regs[0] = dtbAddr // X0: dtb physical address
 		regs.Pstate = kvm.PstateInit
 
 		if err := kvm.SetRegs(vcpuFd, regs); err != nil {
@@ -190,15 +197,38 @@ func (m *Machine) LoadLinux(kernel io.ReaderAt, params string) error {
 	return nil
 }
 
+// buildDTB and its constants have moved to the dtb package (dtb.GenerateVirt,
+// dtb.UARTBase, dtb.GICDistBase, etc.) so they can be reused by both this
+// machine implementation and standalone tools (see cmd/dtbgen).
+
 // uartMMIO handles MMIO accesses within the UART's address window. Only
 // a write to the data register (offset 0) is meaningful: the low byte
 // is printed to stdout.
+// uartFlagRegOffset is the offset of the PL011 UARTFR (flag) register.
+// Bit 4 (RXFE, receive FIFO empty) and bit 5 (TXFF, transmit FIFO
+// full) are the only bits this stub cares about: reporting RXFE=1 and
+// TXFF=0 tells the real Linux PL011 driver that there is never
+// incoming data and that it may always write, so it doesn't stall
+// polling this register.
+const uartFlagRegOffset = 0x18
+
+// uartMMIO handles MMIO accesses within the UART's address window.
+// Writes to the data register (offset 0) are printed to stdout; reads
+// of the flag register report an always-ready, always-empty UART.
+// Everything else is a no-op, which is not a faithful PL011
+// emulation, but is enough for the kernel's early polled console.
 func uartMMIO(physAddr, data uint64, length uint32, isWrite bool) uint64 {
+	offset := physAddr - dtb.UARTBase
+
 	if !isWrite {
+		if offset == uartFlagRegOffset {
+			return 1 << 4 // RXFE
+		}
+
 		return 0
 	}
 
-	if physAddr == uartBase && length >= 1 {
+	if offset == 0 && length >= 1 {
 		fmt.Printf("%c", byte(data))
 	}
 
@@ -224,8 +254,14 @@ func (m *Machine) RunOnce(cpu int) (bool, error) {
 		return false, nil
 	case kvm.EXITMMIO:
 		physAddr, data, length, isWrite := m.runs[cpu].MMIO()
-		if physAddr >= uartBase && physAddr < uartBase+uartSize {
-			uartMMIO(physAddr, data, length, isWrite)
+		if physAddr >= dtb.UARTBase && physAddr < dtb.UARTBase+dtb.UARTSize {
+			result := uartMMIO(physAddr, data, length, isWrite)
+			if !isWrite {
+				// Complete the read by writing the value back into the
+				// kvm_run mmio.data field (RunData.Data[1]) before the
+				// next KVM_RUN, as required by the KVM API.
+				m.runs[cpu].Data[1] = result
+			}
 		}
 
 		return true, nil
