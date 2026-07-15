@@ -59,8 +59,12 @@ type Sregs struct {
 	CR8             uint64
 	EFER            uint64
 	ApicBase        uint64
-	InterruptBitmap [(numInterrupts + 63) / 64]uint64
+	InterruptBitmap [(numInterrupts + bitsPerWord - 1) / bitsPerWord]uint64
 }
+
+// bitsPerWord is the number of bits in a uint64 word of InterruptBitmap,
+// used to round numInterrupts up to a whole number of words.
+const bitsPerWord = 64
 
 // GetSRegs gets the special registers for a vcpu.
 func GetSregs(vcpuFd uintptr) (*Sregs, error) {

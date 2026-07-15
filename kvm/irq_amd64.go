@@ -82,7 +82,7 @@ type PICState struct {
 // InjectInterrupt queues a hardware interrupt vector to be injected.
 func InjectInterrupt(vcpuFd uintptr, intr uint32) error {
 	_, err := Ioctl(vcpuFd,
-		IIOW(kvmInterrupt, 4),
+		IIOW(kvmInterrupt, unsafe.Sizeof(intr)),
 		uintptr(intr))
 
 	return err

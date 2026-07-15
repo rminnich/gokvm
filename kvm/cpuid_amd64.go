@@ -120,13 +120,18 @@ func SetCPUID2(vcpuFd uintptr, kvmCPUID *CPUID) error {
 func GetCPUID2(vcpuFd uintptr, kvmCPUID *CPUID) error {
 	var c *CPUID
 
+	// cpuid2HeaderSize is the size, in bytes, of the fixed-size header
+	// of struct kvm_cpuid2 (nent + padding), used as the ioctl size
+	// parameter regardless of how many CPUID entries follow it.
+	const cpuid2HeaderSize = 8
+
 	data, err := kvmCPUID.Bytes()
 	if err != nil {
 		return err
 	}
 
 	if _, err = Ioctl(vcpuFd,
-		IIOWR(kvmGetCPUID2, 8),
+		IIOWR(kvmGetCPUID2, cpuid2HeaderSize),
 		uintptr(unsafe.Pointer(&data[0]))); err != nil {
 		return err
 	}

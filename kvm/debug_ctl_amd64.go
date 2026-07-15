@@ -21,7 +21,7 @@ func SingleStep(vmFd uintptr, onoff bool) error {
 
 	var (
 		debug         [unsafe.Sizeof(debugControl{})]byte
-		setGuestDebug = IIOW(0x9b, unsafe.Sizeof(debugControl{}))
+		setGuestDebug = IIOW(kvmSetGuestDebug, unsafe.Sizeof(debugControl{}))
 	)
 
 	if onoff {

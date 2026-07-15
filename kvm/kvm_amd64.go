@@ -36,6 +36,8 @@ const (
 	kvmX86SetupMCE           = 0x9C
 	kvmX86GetMCECapSupported = 0x9D
 
+	kvmSetGuestDebug = 0x9b
+
 	kvmGetPIT2 = 0x9F
 	kvmSetPIT2 = 0xA0
 
@@ -83,10 +85,17 @@ func GetTSCKHz(vcpuFd uintptr) (uint64, error) {
 
 type ClockFlag uint32
 
+// Bit positions for the KVM_CLOCK_* flags (see
+// include/uapi/linux/kvm.h in the Linux kernel).
+const (
+	realtimeBit = 2
+	hostTSCBit  = 3
+)
+
 const (
 	TSCStable ClockFlag = 2
-	Realtime  ClockFlag = (1 << 2)
-	HostTSC   ClockFlag = (1 << 3)
+	Realtime  ClockFlag = (1 << realtimeBit)
+	HostTSC   ClockFlag = (1 << hostTSCBit)
 )
 
 type ClockData struct {

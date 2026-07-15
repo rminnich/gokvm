@@ -132,7 +132,7 @@ func TestCPUID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for i := 0; i < len(CPUID.Entries); i++ {
+	for i := range len(CPUID.Entries) {
 		CPUID.Entries[i].Eax = kvm.CPUIDFeatures
 		CPUID.Entries[i].Ebx = 0x4b4d564b // KVMK
 		CPUID.Entries[i].Ecx = 0x564b4d56 // VMKV
@@ -416,10 +416,11 @@ func TestIoctlStringer(t *testing.T) {
 		{name: "Last error", val: kvm.EXITINTERNALERROR, want: "EXITINTERNALERROR"},
 		{name: "Out of range error", val: kvm.ExitType(1024), want: "ExitType(1024)"},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+
 			got := test.val.String()
+
 			if got != test.want {
 				t.Errorf("%s:%s != %s", test.name, test.want, got)
 			}
@@ -1309,7 +1310,7 @@ func TestGetSetMSRS(t *testing.T) {
 	}
 
 	msrs.Entries = make([]kvm.MSREntry, list.NMSRs)
-	for i := 0; i < int(list.NMSRs); i++ {
+	for i := range int(list.NMSRs) {
 		msrs.Entries[i] = kvm.MSREntry{
 			Index: list.Indicies[i],
 		}

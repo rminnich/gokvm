@@ -91,13 +91,36 @@ type RunData struct {
 
 // IO interprets IO requests from a VM, by unpacking RunData.Data[0:1].
 func (r *RunData) IO() (uint64, uint64, uint64, uint64, uint64) {
-	direction := r.Data[0] & 0xFF
-	size := (r.Data[0] >> 8) & 0xFF
-	port := (r.Data[0] >> 16) & 0xFFFF
-	count := (r.Data[0] >> 32) & 0xFFFFFFFF
+	// Bitfield layout of RunData.Data[0] for an IO exit: an 8-bit
+	// direction, an 8-bit size, a 16-bit port, and a 32-bit count,
+	// packed from the low bit upward.
+	const (
+		ioDirectionShift = 0
+		ioDirectionMask  = 0xFF
+
+		ioSizeShift = 8
+		ioSizeMask  = 0xFF
+
+		ioPortShift = 16
+		ioPortMask  = 0xFFFF
+
+		ioCountShift = 32
+		ioCountMask  = 0xFFFFFFFF
+	)
+
+	direction := (r.Data[0] >> ioDirectionShift) & ioDirectionMask
+	size := (r.Data[0] >> ioSizeShift) & ioSizeMask
+	port := (r.Data[0] >> ioPortShift) & ioPortMask
+	count := (r.Data[0] >> ioCountShift) & ioCountMask
 	offset := r.Data[1]
 
 	return direction, size, port, count, offset
+}
+
+// u32 truncates v to its low 32 bits. Used only for the MMIO access
+// length below, which is always a small value (at most 8 bytes).
+func u32(v uint64) uint32 {
+	return uint32(v) //nolint:gosec // MMIO access length is always small
 }
 
 // MMIO interprets EXITMMIO requests from a VM, by unpacking
@@ -105,10 +128,17 @@ func (r *RunData) IO() (uint64, uint64, uint64, uint64, uint64) {
 // data bytes (as a little-endian-packed uint64; only the low length
 // bytes are meaningful), the access length, and whether it was a write.
 func (r *RunData) MMIO() (physAddr, data uint64, length uint32, isWrite bool) {
+	// Bitfield layout of RunData.Data[2] for an MMIO exit: the access
+	// length in the low 32 bits, and an is-write flag at bit 32.
+	const (
+		mmioIsWriteShift = 32
+		mmioIsWriteMask  = 0xFF
+	)
+
 	physAddr = r.Data[0]
 	data = r.Data[1]
-	length = uint32(r.Data[2])
-	isWrite = (r.Data[2]>>32)&0xFF != 0
+	length = u32(r.Data[2])
+	isWrite = (r.Data[2]>>mmioIsWriteShift)&mmioIsWriteMask != 0
 
 	return physAddr, data, length, isWrite
 }

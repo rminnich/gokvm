@@ -233,13 +233,18 @@ func NewMSRS(data []byte) (*MSRS, error) {
 func SetMSRs(vcpuFd uintptr, msrs *MSRS) error {
 	var m *MSRS
 
+	// msrsHeaderSize is the size, in bytes, of the fixed-size header of
+	// struct kvm_msrs (nmsrs + padding), used as the ioctl size
+	// parameter regardless of how many MSR entries follow it.
+	const msrsHeaderSize = 8
+
 	data, err := msrs.Bytes()
 	if err != nil {
 		return err
 	}
 
 	if _, err := Ioctl(vcpuFd,
-		IIOW(kvmSetMSRS, 8),
+		IIOW(kvmSetMSRS, msrsHeaderSize),
 		uintptr(unsafe.Pointer(&data[0]))); err != nil {
 		return err
 	}
@@ -256,13 +261,18 @@ func SetMSRs(vcpuFd uintptr, msrs *MSRS) error {
 func GetMSRs(vcpuFd uintptr, msrs *MSRS) error {
 	var m *MSRS
 
+	// msrsHeaderSize is the size, in bytes, of the fixed-size header of
+	// struct kvm_msrs (nmsrs + padding), used as the ioctl size
+	// parameter regardless of how many MSR entries follow it.
+	const msrsHeaderSize = 8
+
 	data, err := msrs.Bytes()
 	if err != nil {
 		return err
 	}
 
 	if _, err := Ioctl(vcpuFd,
-		IIOWR(kvmGetMSRS, 8),
+		IIOWR(kvmGetMSRS, msrsHeaderSize),
 		uintptr(unsafe.Pointer(&data[0]))); err != nil {
 		return err
 	}

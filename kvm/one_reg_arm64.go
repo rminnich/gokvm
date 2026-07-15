@@ -29,18 +29,27 @@ const (
 	regARMCore = 0x0010 << 16
 )
 
+// regWordSize is the size, in bytes, of a 32-bit register word; ONE_REG
+// core-register IDs encode a field's offset within Regs as a word
+// offset rather than a byte offset.
+const regWordSize = 4
+
 // CoreRegID computes the ONE_REG register ID for a field at the given
 // byte offset within Regs, e.g. CoreRegID(unsafe.Offsetof(Regs{}.PC)).
 func CoreRegID(byteOffset uintptr) uint64 {
-	return regARM64 | regSizeU64 | regARMCore | uint64(byteOffset/4)
+	return regARM64 | regSizeU64 | regARMCore | uint64(byteOffset/regWordSize)
 }
 
 // Convenience register IDs for the core registers most commonly
 // accessed individually (e.g. to set the initial PC before first Run).
-var (
-	RegPC     = CoreRegID(unsafe.Offsetof(Regs{}.PC))
-	RegSP     = CoreRegID(unsafe.Offsetof(Regs{}.SP))
-	RegPstate = CoreRegID(unsafe.Offsetof(Regs{}.Pstate))
+// These are computed with the same arithmetic as CoreRegID, but as
+// compile-time constants (unsafe.Offsetof on a directly-addressed
+// field is itself a constant expression) so they don't need to be
+// package-level vars.
+const (
+	RegPC     = regARM64 | regSizeU64 | regARMCore | uint64(unsafe.Offsetof(Regs{}.PC)/regWordSize)
+	RegSP     = regARM64 | regSizeU64 | regARMCore | uint64(unsafe.Offsetof(Regs{}.SP)/regWordSize)
+	RegPstate = regARM64 | regSizeU64 | regARMCore | uint64(unsafe.Offsetof(Regs{}.Pstate)/regWordSize)
 )
 
 // OneRegister mirrors the arm64 struct kvm_one_reg.
