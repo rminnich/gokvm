@@ -19,6 +19,21 @@ const (
 	GICDistSize = 0x1_0000
 	GICCPUBase  = 0x0801_0000
 	GICCPUSize  = 0x1_0000
+
+	// addressCells/sizeCells describe the root and /memory node address
+	// format (64-bit addresses and sizes, each as two 32-bit cells).
+	addressCells = 2
+	sizeCells    = 2
+
+	// cpuAddressCells/cpuSizeCells describe the /cpus node's own address
+	// format: each CPU is identified by a single "reg" cell, with no
+	// size cell (CPUs aren't address ranges).
+	cpuAddressCells = 1
+	cpuSizeCells    = 0
+
+	// gicInterruptCells is the number of cells in a GICv2 interrupt
+	// specifier: <type, number, flags>.
+	gicInterruptCells = 3
 )
 
 // GenerateVirt builds a minimal devicetree, in the style of QEMU's
@@ -31,8 +46,8 @@ func GenerateVirt(memSize uint64, nCpus int, bootargs string) []byte {
 	b := NewBuilder()
 
 	b.AddPropString("/", "compatible", "linux,dummy-virt")
-	b.AddPropU32("/", "#address-cells", 2)
-	b.AddPropU32("/", "#size-cells", 2)
+	b.AddPropU32("/", "#address-cells", addressCells)
+	b.AddPropU32("/", "#size-cells", sizeCells)
 	b.AddPropU32("/", "interrupt-parent", 1) // phandle of /intc
 
 	b.AddPropString("/chosen", "bootargs", bootargs)
@@ -41,14 +56,14 @@ func GenerateVirt(memSize uint64, nCpus int, bootargs string) []byte {
 	b.AddPropU64Array("/memory", "reg", []uint64{0, memSize})
 	b.AddPropString("/memory", "device_type", "memory")
 
-	b.AddPropU32("/cpus", "#address-cells", 1)
-	b.AddPropU32("/cpus", "#size-cells", 0)
+	b.AddPropU32("/cpus", "#address-cells", cpuAddressCells)
+	b.AddPropU32("/cpus", "#size-cells", cpuSizeCells)
 
-	for i := 0; i < nCpus; i++ {
+	for i := range nCpus {
 		path := fmt.Sprintf("/cpus/cpu@%d", i)
 		b.AddPropString(path, "device_type", "cpu")
 		b.AddPropString(path, "compatible", "arm,armv8")
-		b.AddPropU32(path, "reg", uint32(i))
+		b.AddPropU32(path, "reg", u32(i))
 		b.AddPropString(path, "enable-method", "psci")
 	}
 
@@ -58,13 +73,13 @@ func GenerateVirt(memSize uint64, nCpus int, bootargs string) []byte {
 	// GICv2: standard "arm,cortex-a15-gic" binding, reg = <dist, cpu>.
 	b.AddPropString("/intc", "compatible", "arm,cortex-a15-gic")
 	b.AddPropEmpty("/intc", "interrupt-controller")
-	b.AddPropU32("/intc", "#interrupt-cells", 3)
+	b.AddPropU32("/intc", "#interrupt-cells", gicInterruptCells)
 	b.AddPropU64Array("/intc", "reg", []uint64{GICDistBase, GICDistSize, GICCPUBase, GICCPUSize})
 	b.AddPropU32("/intc", "phandle", 1)
 
-	// ARM architected timer: standard PPI assignment (secure phys, phys,
-	// virt, hyp), each level-low triggered, as used by e.g. QEMU's virt
-	// machine device tree.
+	// ARM architected timer: standard PPI assignment (secure physical,
+	// non-secure physical, virtual, hyp), each level-low triggered, as
+	// used by e.g. QEMU's virt machine device tree.
 	b.AddPropString("/timer", "compatible", "arm,armv8-timer")
 	b.AddPropU32Array("/timer", "interrupts", []uint32{
 		1, 13, 0xff08,

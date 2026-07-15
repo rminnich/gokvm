@@ -26,6 +26,12 @@ const (
 	tokenEndNode   = 0x00000002
 	tokenProp      = 0x00000003
 	tokenEnd       = 0x00000009
+
+	// Sizes, in bytes, of the cell types AddPropU32/U32Array/U64Array
+	// encode, and of a memory-reservation-block entry (two u64s).
+	uint32Size    = 4
+	uint64Size    = 8
+	memRsvMapSize = 2 * uint64Size
 )
 
 // node is an in-progress devicetree node: a name, a set of properties
@@ -61,7 +67,7 @@ func (b *Builder) AddProp(path, name string, value []byte) {
 // AddPropU32 adds a single big-endian uint32 (a devicetree "cell")
 // property.
 func (b *Builder) AddPropU32(path, name string, value uint32) {
-	buf := make([]byte, 4)
+	buf := make([]byte, uint32Size)
 	binary.BigEndian.PutUint32(buf, value)
 	b.AddProp(path, name, buf)
 }
@@ -69,10 +75,11 @@ func (b *Builder) AddPropU32(path, name string, value uint32) {
 // AddPropU32Array adds a property whose value is an array of
 // big-endian uint32 cells.
 func (b *Builder) AddPropU32Array(path, name string, values []uint32) {
-	buf := make([]byte, 4*len(values))
+	buf := make([]byte, uint32Size*len(values))
 	for i, v := range values {
-		binary.BigEndian.PutUint32(buf[i*4:], v)
+		binary.BigEndian.PutUint32(buf[i*uint32Size:], v)
 	}
+
 	b.AddProp(path, name, buf)
 }
 
@@ -80,10 +87,11 @@ func (b *Builder) AddPropU32Array(path, name string, values []uint32) {
 // big-endian uint64 cells (used for e.g. "reg" with #address-cells=2
 // #size-cells=2).
 func (b *Builder) AddPropU64Array(path, name string, values []uint64) {
-	buf := make([]byte, 8*len(values))
+	buf := make([]byte, uint64Size*len(values))
 	for i, v := range values {
-		binary.BigEndian.PutUint64(buf[i*8:], v)
+		binary.BigEndian.PutUint64(buf[i*uint64Size:], v)
 	}
+
 	b.AddProp(path, name, buf)
 }
 
@@ -96,11 +104,17 @@ func (b *Builder) AddPropString(path, name, value string) {
 // AddPropStrings adds a property whose value is a list of
 // NUL-terminated strings concatenated together.
 func (b *Builder) AddPropStrings(path, name string, values []string) {
-	var buf []byte
+	size := 0
+	for _, v := range values {
+		size += len(v) + 1
+	}
+
+	buf := make([]byte, 0, size)
 	for _, v := range values {
 		buf = append(buf, v...)
 		buf = append(buf, 0)
 	}
+
 	b.AddProp(path, name, buf)
 }
 
@@ -145,7 +159,8 @@ func splitPath(path string) []string {
 	var parts []string
 
 	start := 0
-	for i := 0; i < len(path); i++ {
+
+	for i := range len(path) {
 		if path[i] == '/' {
 			if i > start {
 				parts = append(parts, path[start:i])
@@ -169,9 +184,17 @@ func pad4(buf *bytes.Buffer) {
 }
 
 func writeU32(buf *bytes.Buffer, v uint32) {
-	var tmp [4]byte
+	var tmp [uint32Size]byte
+
 	binary.BigEndian.PutUint32(tmp[:], v)
 	buf.Write(tmp[:])
+}
+
+// u32 converts a non-negative int (a length or offset) to uint32. All
+// such values in this package are devicetree blob sizes/offsets, which
+// are always well under the 4 GiB range representable in uint32.
+func u32(n int) uint32 {
+	return uint32(n) //nolint:gosec // bounded by realistic devicetree blob sizes
 }
 
 // strOffset returns the offset of name within the (eventual) strings
@@ -183,7 +206,7 @@ func (b *Builder) strOffset(name string) uint32 {
 
 	off := uint32(0)
 	for _, s := range b.strings {
-		off += uint32(len(s)) + 1
+		off += u32(len(s)) + 1
 	}
 
 	b.strOff[name] = off
@@ -200,8 +223,9 @@ func (b *Builder) writeNode(buf *bytes.Buffer, n *node) {
 
 	for i, key := range n.propKeys {
 		val := n.propVals[i]
+
 		writeU32(buf, tokenProp)
-		writeU32(buf, uint32(len(val)))
+		writeU32(buf, u32(len(val)))
 		writeU32(buf, b.strOffset(key))
 		buf.Write(val)
 		pad4(buf)
@@ -235,14 +259,15 @@ func (b *Builder) Bytes() []byte {
 	const headerSize = 40 // 10 x uint32
 
 	// No memory reservations: a single terminating {0,0} entry.
-	memRsvMap := make([]byte, 16)
+	memRsvMap := make([]byte, memRsvMapSize)
 
 	offMemRsvMap := uint32(headerSize)
-	offDTStruct := offMemRsvMap + uint32(len(memRsvMap))
-	offDTStrings := offDTStruct + uint32(structBuf.Len())
-	totalSize := offDTStrings + uint32(stringsBuf.Len())
+	offDTStruct := offMemRsvMap + u32(len(memRsvMap))
+	offDTStrings := offDTStruct + u32(structBuf.Len())
+	totalSize := offDTStrings + u32(stringsBuf.Len())
 
 	var out bytes.Buffer
+
 	writeU32(&out, magic)
 	writeU32(&out, totalSize)
 	writeU32(&out, offDTStruct)
@@ -251,8 +276,8 @@ func (b *Builder) Bytes() []byte {
 	writeU32(&out, fdtVersion)
 	writeU32(&out, fdtLastCompVerion)
 	writeU32(&out, 0) // boot_cpuid_phys
-	writeU32(&out, uint32(stringsBuf.Len()))
-	writeU32(&out, uint32(structBuf.Len()))
+	writeU32(&out, u32(stringsBuf.Len()))
+	writeU32(&out, u32(structBuf.Len()))
 	out.Write(memRsvMap)
 	out.Write(structBuf.Bytes())
 	out.Write(stringsBuf.Bytes())

@@ -1,10 +1,17 @@
-GOLANGCI_LINT_VERSION = v1.54.2
-
 export GOPATH := $(shell go env GOPATH)
 export PATH := $(GOPATH)/bin:$(PATH)
 
 $(GOPATH)/bin/stringer:
 	go install golang.org/x/tools/cmd/stringer@latest
+
+$(GOPATH)/bin/golangci-lint:
+	# golangci-lint's own go.mod pins an older toolchain via a
+	# "toolchain" directive; GOTOOLCHAIN=go1.26.0 forces `go install` to
+	# build it with the same Go version this project requires (see
+	# go.mod), since golangci-lint refuses to run against a project
+	# whose "go" directive is newer than the Go version it was built
+	# with.
+	GOTOOLCHAIN=go1.26.0 go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 $(GOPATH)/src/github.com/u-root/u-root:
 	git clone --depth=1 --branch v0.13.1 \
@@ -17,10 +24,6 @@ $(GOPATH)/bin/u-root: $(GOPATH)/src/github.com/u-root/u-root
 gokvm: $(wildcard *.go) $(wildcard */*.go)
 	$(MAKE) generate
 	go build .
-
-golangci-lint:
-	curl --retry 5 -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-		| sh -s -- -b . $(GOLANGCI_LINT_VERSION)
 
 vda.img:
 	$(eval dir = $(shell mktemp -d))
@@ -89,9 +92,10 @@ generate: $(GOPATH)/bin/stringer
 	go generate ./...
 
 .PHONY: golangci
-golangci: golangci-lint
+golangci: $(GOPATH)/bin/golangci-lint
 	$(MAKE) generate
-	./golangci-lint run ./...
+	GOOS=linux GOARCH=amd64 golangci-lint run ./...
+	GOOS=linux GOARCH=arm64 golangci-lint run ./...
 
 .PHONY: test
 test: bzImage vmlinux vmlinux_PVH initrd vda.img CLOUDHV.fd
@@ -102,7 +106,7 @@ test: bzImage vmlinux vmlinux_PVH initrd vda.img CLOUDHV.fd
 
 .PHONY: clean
 clean:
-	rm -rf ./gokvm ./golangci-lint bzImage* vmlinux* CLOUDHV.fd _linux *_string.go virt.dtb
+	rm -rf ./gokvm bzImage* vmlinux* CLOUDHV.fd _linux *_string.go virt.dtb
 
 .PHONY: qemu
 qemu: initrd bzImage

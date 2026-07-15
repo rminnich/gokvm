@@ -19,10 +19,16 @@ import (
 	"github.com/bobuhiro11/gokvm/dtb"
 )
 
+// defaultMemSize is the default -mem value: 256 MiB.
+const defaultMemSize = 256 << 20
+
+// outFileMode restricts the generated DTB to owner read/write only.
+const outFileMode = 0o600
+
 func main() {
 	var (
 		out      = flag.String("o", "virt.dtb", "output file path")
-		memSize  = flag.Uint64("mem", 1<<28, "guest memory size in bytes")
+		memSize  = flag.Uint64("mem", defaultMemSize, "guest memory size in bytes")
 		nCpus    = flag.Int("cpus", 1, "number of guest vcpus")
 		bootargs = flag.String("bootargs", "console=ttyAMA0", "kernel command line")
 	)
@@ -31,7 +37,7 @@ func main() {
 
 	blob := dtb.GenerateVirt(*memSize, *nCpus, *bootargs)
 
-	if err := os.WriteFile(*out, blob, 0o644); err != nil {
+	if err := os.WriteFile(*out, blob, outFileMode); err != nil {
 		log.Fatal(err)
 	}
 }
