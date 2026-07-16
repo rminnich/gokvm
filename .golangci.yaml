@@ -31,6 +31,10 @@ linters:
     - depguard
     - nolintlint
     - tagalign
+    # lll enforces a hard max line length (120 cols by default); we prefer
+    # not to force-wrap statements/comments that are readable as a single
+    # longer line, so it's disabled rather than fought with wrapping.
+    - lll
     # tenv is deprecated in favor of usetesting (which we keep enabled);
     # unlike the already-deprecated linters noted above, golangci-lint
     # doesn't force-deactivate tenv itself, so it must be disabled here
