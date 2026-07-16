@@ -229,6 +229,13 @@ func testNewAndLoadLinux(t *testing.T, kernel, tap, guestIPv4, hostIPv4, prefixL
 
 	m.RunData()
 
+	// stop is closed when testNewAndLoadLinux returns (by any path:
+	// normal return, t.Fatal, t.Skip), so the deadline watchdog
+	// goroutine below never fires t.Errorf after the test has already
+	// completed -- doing so panics the whole test binary.
+	stop := make(chan struct{})
+	defer close(stop)
+
 	// Deadline watchdog: if the test deadline is
 	// approaching (60s margin), log serial output and
 	// close the VM so we get diagnostics instead of
@@ -241,12 +248,12 @@ func testNewAndLoadLinux(t *testing.T, kernel, tap, guestIPv4, hostIPv4, prefixL
 				time.Until(dl) - margin)
 			defer timer.Stop()
 
-			<-timer.C
-			t.Errorf("deadline watchdog fired "+
-				"(60s before %s)\nserial:\n%s",
-				dl.Format(time.RFC3339),
-				serialBuf.String())
-			m.Close()
+			select {
+			case <-timer.C:
+				t.Errorf("deadline watchdog fired (60s before %s)\nserial:\n%s", dl.Format(time.RFC3339), serialBuf.String())
+				m.Close()
+			case <-stop:
+			}
 		}()
 	}
 
