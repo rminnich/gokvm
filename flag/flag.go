@@ -46,8 +46,7 @@ func parseBootArgs(args []string) (*BootArgs, error) {
 
 	bootCmd.IntVar(&c.NCPUs, "c", 1, "number of cpus")
 
-	bootCmd.BoolVar(&c.Debug, "vtrace", false,
-		"enable verbose virtio-net/virtio-blk queue and packet tracing")
+	bootCmd.BoolVar(&c.Debug, "vtrace", false, "enable verbose virtio-net/virtio-blk queue and packet tracing")
 
 	msize := bootCmd.String("m", "1G",
 		"memory size: as number[gGmM], optional units, defaults to G")

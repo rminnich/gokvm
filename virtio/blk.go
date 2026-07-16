@@ -132,8 +132,7 @@ func (v *Blk) IOThreadEntry() {
 	for {
 		select {
 		case <-v.done:
-			traceln("virtio-blk: IOThreadEntry " +
-				"received done signal")
+			traceln("virtio-blk: IOThreadEntry received done signal")
 
 			return
 		case <-v.kick:
@@ -174,8 +173,7 @@ func (v *Blk) IO() error {
 		return ErrNoTxPacket
 	}
 
-	tracef("virtio-blk IO: avail=%d last=%d",
-		LoadU16(&availRing.Idx), v.LastAvailIdx[sel])
+	tracef("virtio-blk IO: avail=%d last=%d", LoadU16(&availRing.Idx), v.LastAvailIdx[sel])
 
 	for v.LastAvailIdx[sel] != LoadU16(&availRing.Idx) {
 		descID := availRing.Ring[v.LastAvailIdx[sel]%QueueSize]
@@ -206,9 +204,7 @@ func (v *Blk) IO() error {
 		blkReq := *((*BlkReq)(unsafe.Pointer(&buf[0][0])))
 		data := buf[1]
 
-		tracef("virtio-blk IO: type=%d sector=%d"+
-			" len=%d", blkReq.Type, blkReq.Sector,
-			len(data))
+		tracef("virtio-blk IO: type=%d sector=%d len=%d", blkReq.Type, blkReq.Sector, len(data))
 
 		var ioErr error
 
@@ -263,8 +259,7 @@ func (v *Blk) Write(port uint64, bytes []byte) error {
 		v.VirtQueue[sel] = (*VirtQueue)(
 			unsafe.Pointer(&v.Mem[physAddr]))
 
-		tracef("virtio-blk: queue %d PFN set,"+
-			" physAddr=0x%x", sel, physAddr)
+		tracef("virtio-blk: queue %d PFN set, physAddr=0x%x", sel, physAddr)
 	case regQueueSelect:
 		v.Hdr.commonHeader.queueSEL = u16(pci.BytesToNum(bytes))
 	case regQueueNotify:
@@ -273,11 +268,7 @@ func (v *Blk) Write(port uint64, bytes []byte) error {
 			traceln("virtio-blk: kick sent")
 		default:
 			if v.VirtQueue[0] != nil {
-				tracef("virtio-blk: kick dropped"+
-					" (avail=%d last=%d)",
-					LoadU16(
-						&v.VirtQueue[0].AvailRing.Idx),
-					v.LastAvailIdx[0])
+				tracef("virtio-blk: kick dropped (avail=%d last=%d)", LoadU16(&v.VirtQueue[0].AvailRing.Idx), v.LastAvailIdx[0])
 			}
 		}
 	case regISR:

@@ -138,8 +138,7 @@ func (v *Net) RxThreadEntry() {
 	for {
 		select {
 		case <-v.done:
-			traceln("virtio-net: RxThreadEntry " +
-				"received done signal")
+			traceln("virtio-net: RxThreadEntry received done signal")
 
 			return
 		case <-v.rxKick:
@@ -237,8 +236,7 @@ func (v *Net) TxThreadEntry() {
 	for {
 		select {
 		case <-v.done:
-			traceln("virtio-net: TxThreadEntry " +
-				"received done signal")
+			traceln("virtio-net: TxThreadEntry received done signal")
 
 			return
 		case <-v.txKick:
@@ -347,10 +345,7 @@ func (v *Net) Write(port uint64, bytes []byte) error {
 				traceln("virtio-net: tx kick dropped (channel full)")
 			}
 		default:
-			tracef(
-				"virtio-net: unexpected queue %d",
-				queueIdx,
-			)
+			tracef("virtio-net: unexpected queue %d", queueIdx)
 		}
 	case regISR:
 	default:

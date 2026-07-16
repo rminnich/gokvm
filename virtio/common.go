@@ -3,14 +3,14 @@ package virtio
 import "log"
 
 // Trace enables verbose per-request/per-packet tracing for virtio-net and
-// virtio-blk devices (queue setup, kicks, and rx/tx activity). It is off by
-// default; the `boot` subcommand's `-vtrace` flag enables it.
+// virtio-blk devices (queue setup, kicks, and rx/tx activity). It is off
+// by default; the `boot` subcommand's `-vtrace` flag enables it.
 //
-// CLI flag before any VM is created; threading it through every virtio
-// constructor and device method would add a parameter to nearly every
-// call in this package for no benefit.
+// flag before any VM is created; threading it through every virtio
+// constructor and device method would add a parameter to nearly every call
+// in this package for no benefit.
 //
-//nolint:gochecknoglobals // process-wide runtime toggle set once from a
+//nolint:gochecknoglobals // process-wide runtime toggle set once from a CLI
 var Trace bool
 
 // tracef logs a formatted trace message when Trace is enabled.
