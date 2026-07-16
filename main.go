@@ -26,6 +26,7 @@ func main() {
 			NCPUs:      bootArgs.NCPUs,
 			MemSize:    bootArgs.MemSize,
 			TraceCount: bootArgs.TraceCount,
+			Debug:      bootArgs.Debug,
 		}
 
 		vmm := vmm.New(*c)

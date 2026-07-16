@@ -3,7 +3,6 @@ package virtio
 import (
 	"bytes"
 	"encoding/binary"
-	"log"
 	"os"
 	"sync"
 	"time"
@@ -125,7 +124,7 @@ func (v *Blk) Read(port uint64, bytes []byte) error {
 }
 
 func (v *Blk) IOThreadEntry() {
-	log.Println("virtio-blk: IOThreadEntry started")
+	traceln("virtio-blk: IOThreadEntry started")
 
 	ticker := time.NewTicker(1 * time.Millisecond)
 	defer ticker.Stop()
@@ -133,7 +132,7 @@ func (v *Blk) IOThreadEntry() {
 	for {
 		select {
 		case <-v.done:
-			log.Println("virtio-blk: IOThreadEntry " +
+			traceln("virtio-blk: IOThreadEntry " +
 				"received done signal")
 
 			return
@@ -175,7 +174,7 @@ func (v *Blk) IO() error {
 		return ErrNoTxPacket
 	}
 
-	log.Printf("virtio-blk IO: avail=%d last=%d",
+	tracef("virtio-blk IO: avail=%d last=%d",
 		LoadU16(&availRing.Idx), v.LastAvailIdx[sel])
 
 	for v.LastAvailIdx[sel] != LoadU16(&availRing.Idx) {
@@ -207,7 +206,7 @@ func (v *Blk) IO() error {
 		blkReq := *((*BlkReq)(unsafe.Pointer(&buf[0][0])))
 		data := buf[1]
 
-		log.Printf("virtio-blk IO: type=%d sector=%d"+
+		tracef("virtio-blk IO: type=%d sector=%d"+
 			" len=%d", blkReq.Type, blkReq.Sector,
 			len(data))
 
@@ -264,17 +263,17 @@ func (v *Blk) Write(port uint64, bytes []byte) error {
 		v.VirtQueue[sel] = (*VirtQueue)(
 			unsafe.Pointer(&v.Mem[physAddr]))
 
-		log.Printf("virtio-blk: queue %d PFN set,"+
+		tracef("virtio-blk: queue %d PFN set,"+
 			" physAddr=0x%x", sel, physAddr)
 	case regQueueSelect:
 		v.Hdr.commonHeader.queueSEL = u16(pci.BytesToNum(bytes))
 	case regQueueNotify:
 		select {
 		case v.kick <- true:
-			log.Println("virtio-blk: kick sent")
+			traceln("virtio-blk: kick sent")
 		default:
 			if v.VirtQueue[0] != nil {
-				log.Printf("virtio-blk: kick dropped"+
+				tracef("virtio-blk: kick dropped"+
 					" (avail=%d last=%d)",
 					LoadU16(
 						&v.VirtQueue[0].AvailRing.Idx),
@@ -297,7 +296,7 @@ func (v *Blk) Size() uint64 {
 }
 
 func (v *Blk) Close() error {
-	log.Println("virtio-blk: Close called")
+	traceln("virtio-blk: Close called")
 	v.closeOnce.Do(func() { close(v.done) })
 
 	return v.file.Close()

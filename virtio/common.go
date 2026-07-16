@@ -1,5 +1,32 @@
 package virtio
 
+import "log"
+
+// Trace enables verbose per-request/per-packet tracing for virtio-net and
+// virtio-blk devices (queue setup, kicks, and rx/tx activity). It is off by
+// default; the `boot` subcommand's `-vtrace` flag enables it.
+//
+// CLI flag before any VM is created; threading it through every virtio
+// constructor and device method would add a parameter to nearly every
+// call in this package for no benefit.
+//
+//nolint:gochecknoglobals // process-wide runtime toggle set once from a
+var Trace bool
+
+// tracef logs a formatted trace message when Trace is enabled.
+func tracef(format string, v ...any) {
+	if Trace {
+		log.Printf(format, v...)
+	}
+}
+
+// traceln logs a trace message when Trace is enabled.
+func traceln(v ...any) {
+	if Trace {
+		log.Println(v...)
+	}
+}
+
 const (
 	// The number of free descriptors in virt queue must exceed
 	// MAX_SKB_FRAGS (16). Otherwise, packet transmission from

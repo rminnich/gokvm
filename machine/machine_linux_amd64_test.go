@@ -17,6 +17,7 @@ import (
 	"github.com/bobuhiro11/gokvm/kvm"
 	"github.com/bobuhiro11/gokvm/machine"
 	"github.com/bobuhiro11/gokvm/pvh"
+	"github.com/bobuhiro11/gokvm/virtio"
 	"golang.org/x/arch/x86/x86asm"
 )
 
@@ -162,6 +163,11 @@ func testNewAndLoadLinux(t *testing.T, kernel, tap, guestIPv4, hostIPv4, prefixL
 	if os.Getuid() != 0 {
 		t.Skipf("Skipping test since we are not root")
 	}
+
+	// This test exercises tap/disk networking directly via the machine
+	// package (bypassing vmm's -vtrace flag), so enable virtio-net/
+	// virtio-blk tracing unconditionally here for diagnosability.
+	virtio.Trace = true
 
 	m, err := machine.New("/dev/kvm", 1, 1<<29)
 	if err != nil {

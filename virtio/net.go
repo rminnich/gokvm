@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
-	"log"
 	"os"
 	"os/signal"
 	"sync"
@@ -134,12 +133,12 @@ func (v *Net) Read(port uint64, bytes []byte) error {
 }
 
 func (v *Net) RxThreadEntry() {
-	log.Println("virtio-net: RxThreadEntry started")
+	traceln("virtio-net: RxThreadEntry started")
 
 	for {
 		select {
 		case <-v.done:
-			log.Println("virtio-net: RxThreadEntry " +
+			traceln("virtio-net: RxThreadEntry " +
 				"received done signal")
 
 			return
@@ -160,6 +159,8 @@ func (v *Net) Rx() error {
 	}
 
 	packet = packet[:n]
+
+	tracef("virtio-net: rx %d bytes from tap", n)
 
 	// append struct virtio_net_hdr
 	packet = append(make([]byte, virtioNetHdrSize), packet...)
@@ -228,7 +229,7 @@ func (v *Net) Rx() error {
 }
 
 func (v *Net) TxThreadEntry() {
-	log.Println("virtio-net: TxThreadEntry started")
+	traceln("virtio-net: TxThreadEntry started")
 
 	ticker := time.NewTicker(txPollInterval)
 	defer ticker.Stop()
@@ -236,7 +237,7 @@ func (v *Net) TxThreadEntry() {
 	for {
 		select {
 		case <-v.done:
-			log.Println("virtio-net: TxThreadEntry " +
+			traceln("virtio-net: TxThreadEntry " +
 				"received done signal")
 
 			return
@@ -297,6 +298,8 @@ func (v *Net) Tx() error {
 		// refs https://github.com/torvalds/linux/blob/38f80f42/include/uapi/linux/virtio_net.h#L178-L191
 		buf = buf[virtioNetHdrSize:]
 
+		tracef("virtio-net: tx %d bytes to tap", len(buf))
+
 		if _, err := v.tap.Write(buf); err != nil {
 			return err
 		}
@@ -324,6 +327,8 @@ func (v *Net) Write(port uint64, bytes []byte) error {
 
 		physAddr := u32(pci.BytesToNum(bytes) * pageSize)
 		v.VirtQueue[sel] = (*VirtQueue)(unsafe.Pointer(&v.Mem[physAddr]))
+
+		tracef("virtio-net: queue %d PFN set, physAddr=0x%x", sel, physAddr)
 	case regQueueSelect:
 		v.Hdr.commonHeader.queueSEL = u16(pci.BytesToNum(bytes))
 	case regQueueNotify:
@@ -332,14 +337,17 @@ func (v *Net) Write(port uint64, bytes []byte) error {
 		case 0:
 			// RX queue kick: silently drop.
 			// RX is driven by SIGIO signals.
+			traceln("virtio-net: rx queue kick (dropped, driven by SIGIO)")
 		case 1:
 			// TX queue kick: non-blocking send.
 			select {
 			case v.txKick <- true:
+				traceln("virtio-net: tx kick sent")
 			default:
+				traceln("virtio-net: tx kick dropped (channel full)")
 			}
 		default:
-			log.Printf(
+			tracef(
 				"virtio-net: unexpected queue %d",
 				queueIdx,
 			)
@@ -360,7 +368,7 @@ func (v *Net) Size() uint64 {
 }
 
 func (v *Net) Close() error {
-	log.Println("virtio-net: Close called")
+	traceln("virtio-net: Close called")
 	signal.Stop(v.rxKick)
 
 	v.closeOnce.Do(func() { close(v.done) })

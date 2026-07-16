@@ -9,11 +9,14 @@ import (
 	"github.com/bobuhiro11/gokvm/machine"
 	"github.com/bobuhiro11/gokvm/pvh"
 	"github.com/bobuhiro11/gokvm/term"
+	"github.com/bobuhiro11/gokvm/virtio"
 	"golang.org/x/sync/errgroup"
 )
 
 // Init instantiates a machine.
 func (v *VMM) Init() error {
+	virtio.Trace = v.Debug
+
 	m, err := machine.New(v.Dev, v.NCPUs, v.MemSize)
 	if err != nil {
 		return err
