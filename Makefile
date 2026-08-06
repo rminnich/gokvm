@@ -94,6 +94,10 @@ test: bzImage vmlinux vmlinux_PVH initrd vda.img CLOUDHV.fd
 	unshare --user --net --map-root-user go test -timeout 30m -coverprofile c.out ./...
 	go mod tidy && git diff --no-patch --exit-code go.sum
 
+.PHONY: build-arm64
+build-arm64:
+	GOARCH=arm64 go build ./...
+
 .PHONY: clean
 clean:
 	rm -rf ./gokvm ./golangci-lint bzImage* vmlinux* CLOUDHV.fd _linux *_string.go

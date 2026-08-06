@@ -8,7 +8,9 @@ import (
 )
 
 // KVMCapabilities probes the system for kvm capabilities.
-func KVMCapabilities() error {
+func init() { kvmCapabilitiesImpl = kvmCapabilities }
+
+func kvmCapabilities() error {
 	X86tests := []kvm.Capability{
 		kvm.CapIRQChip,
 		kvm.CapUserMemory,

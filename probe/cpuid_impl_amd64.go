@@ -8,7 +8,9 @@ import (
 )
 
 // CPUID call 'KVM_GET_SUPPORTED_CPUID' and print the result.
-func CPUID() error {
+func init() { cpuidImpl = cpuID }
+
+func cpuID() error {
 	kvmFile, err := os.Open("/dev/kvm")
 	if err != nil {
 		return err
