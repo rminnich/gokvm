@@ -20,6 +20,8 @@ type BootArgs struct {
 	TapIfName  string
 	Disk       string
 	TraceCount int
+	Resume     string
+	SavePath   string
 }
 
 func parseBootArgs(args []string) (*BootArgs, error) {
@@ -49,6 +51,9 @@ func parseBootArgs(args []string) (*BootArgs, error) {
 		"memory size: as number[gGmM], optional units, defaults to G")
 	tc := bootCmd.String("T", "0",
 		"how many instructions to skip between trace prints -- 0 means tracing disabled")
+
+	bootCmd.StringVar(&c.Resume, "R", "", "resume from state file")
+	bootCmd.StringVar(&c.SavePath, "S", "gokvm.state", "path to write state on save")
 
 	var err error
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/bobuhiro11/gokvm/machine"
 	"github.com/bobuhiro11/gokvm/pvh"
@@ -25,6 +27,8 @@ type Config struct {
 	NCPUs      int
 	MemSize    int
 	TraceCount int
+	Resume     string // path to state file for -R resume
+	SavePath   string // path to write state on save
 }
 
 type VMM struct {
@@ -64,6 +68,15 @@ func (v *VMM) Init() error {
 }
 
 func (v *VMM) Setup() error {
+	// Resume path: load state from file, skip kernel setup.
+	if v.Resume != "" {
+		if err := v.Machine.Load(v.Resume); err != nil {
+			return fmt.Errorf("resume: %w", err)
+		}
+		log.Printf("Resumed from %s", v.Resume)
+		return nil
+	}
+
 	var initrd *os.File
 	// Kernel arg required to load kernel or firmware image
 	kern, err := os.Open(v.Kernel)
@@ -98,6 +111,31 @@ func (v *VMM) Setup() error {
 
 func (v *VMM) Boot() error {
 	var err error
+
+	savePath := v.SavePath
+	if savePath == "" {
+		savePath = "gokvm.state"
+	}
+
+	save := func() error {
+		log.Printf("Saving state to %s", savePath)
+		if err := v.Machine.Save(savePath); err != nil {
+			return err
+		}
+		log.Printf("State saved to %s", savePath)
+		return nil
+	}
+
+	// SIGHUP triggers a save.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGHUP)
+	go func() {
+		for range sigs {
+			if err := save(); err != nil {
+				log.Printf("SIGHUP save: %v", err)
+			}
+		}
+	}()
 
 	trace := v.TraceCount > 0
 	if err := v.SingleStep(trace); err != nil {
@@ -139,7 +177,7 @@ func (v *VMM) Boot() error {
 	in := bufio.NewReader(os.Stdin)
 
 	g.Go(func() error {
-		err := v.GetSerial().Start(*in, restoreMode, v.InjectSerialIRQ)
+		err := v.GetSerial().Start(*in, restoreMode, v.InjectSerialIRQ, save)
 		log.Printf("Serial exits: %v", err)
 
 		return err

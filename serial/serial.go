@@ -127,7 +127,7 @@ func (s *Serial) Out(port uint64, values []byte) error {
 	return err
 }
 
-func (s *Serial) Start(in bufio.Reader, restoreMode func(), irqInject func() error) error {
+func (s *Serial) Start(in bufio.Reader, restoreMode func(), irqInject func() error, save func() error) error {
 	var before byte = 0
 
 	for {
@@ -151,6 +151,12 @@ func (s *Serial) Start(in bufio.Reader, restoreMode func(), irqInject func() err
 			restoreMode()
 
 			break
+		}
+
+		if before == 0x1 && b == 0x1a {
+			if err := save(); err != nil {
+				log.Printf("save: %v", err)
+			}
 		}
 
 		before = b
