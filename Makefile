@@ -62,12 +62,12 @@ bzImage_PVH vmlinux_PVH CLOUDHV.fd: linux_pvh.config ./scripts/get_kernel.bash
 .PHONY: run
 run: initrd bzImage
 	$(MAKE) generate
-	go run . boot -c 4 -i "./initrd"
+	go run . boot -c 2 -i "./initrd"
 
 .PHONY: runpvh
 runpvh: initrd vmlinux_PVH
 	$(MAKE) generate
-	go run . boot -c 4 -k "./vmlinuz_PVH" -i "./initrd"
+	go run . boot -c 2 -k "./vmlinuz_PVH" -i "./initrd"
 
 .PHONY: run-system-kernel
 run-system-kernel:

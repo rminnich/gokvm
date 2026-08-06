@@ -90,7 +90,8 @@ func TestStartSerial(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		if err := s.Start(*in, func() {}, injectFunc); !errors.Is(err, io.EOF) {
+		saveFunc := func() error { return nil }
+		if err := s.Start(*in, func() {}, injectFunc, saveFunc); !errors.Is(err, io.EOF) {
 			t.Errorf("s.Start(): got %v, want %v", err, io.EOF)
 		}
 	}()

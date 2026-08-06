@@ -168,12 +168,6 @@ func (v *VMM) Boot() error {
 
 	defer restoreMode()
 
-	if err := v.SingleStep(trace); err != nil {
-		log.Printf("SingleStep(%v): %v", trace, err)
-
-		return err
-	}
-
 	in := bufio.NewReader(os.Stdin)
 
 	g.Go(func() error {
