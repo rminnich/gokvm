@@ -39,6 +39,7 @@ func parseBootArgs(args []string) (*BootArgs, error) {
 		`dyndbg="file arch/x86/kernel/smpboot.c +plf ; file drivers/net/virtio_net.c +plf" `+
 		`pci=realloc=off `+
 		`virtio_pci.force_legacy=1 rdinit=/init init=/init `+
+		`kunit.enable=0 `+
 		`gokvm.ipv4_addr=192.168.20.1/24`,
 		"kernel command-line parameters")
 	bootCmd.StringVar(&c.TapIfName, "t", "", `name of tap interface. `+
