@@ -44,6 +44,7 @@ checkbinaries:
 	@which awk
 	@which grep
 	@which cut
+	@which iperf3
 
 initrd: checkbinaries ./scripts/get_initrd.bash .bashrc \
   $(GOPATH)/bin/u-root \
@@ -118,6 +119,10 @@ build-otherarch: build-arm64 build-riscv64
 .PHONY: test-save-restore
 test-save-restore: gokvm initrd kernel_cpu
 	expect scripts/save-restore-test.expect
+
+.PHONY: net-test
+net-test: gokvm initrd kernel_cpu
+	./scripts/net-test.sh
 
 .PHONY: clean
 clean:

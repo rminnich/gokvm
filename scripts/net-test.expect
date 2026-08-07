@@ -1,0 +1,98 @@
+#!/usr/bin/env expect
+# Network performance test for gokvm.
+#
+# This script must run inside a private network namespace where the tap
+# interface already exists. The Makefile net-test target sets that up:
+#
+#   unshare --user --net --map-root-user sh -c '
+#       ip link set lo up
+#       ip tuntap add tap0 mode tap
+#       ip addr add 192.168.20.2/24 dev tap0
+#       ip link set tap0 up
+#       expect scripts/net-test.expect
+#   '
+#
+# Running inside the netns lets host-side iperf3 clients (spawned by expect)
+# reach the guest through the tap.
+
+set timeout 60
+set guest_ip "192.168.20.1"
+set host_ip  "192.168.20.2"
+set tap      "tap0"
+set netparam "gokvm.ipv4_addr=${guest_ip}/24"
+set cmdline  "console=ttyS0 earlyprintk=serial noapic noacpi pci=conf1 reboot=k panic=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 mitigations=off pci=realloc=off virtio_pci.force_legacy=1 rdinit=/init init=/init kunit.enable=0 $netparam"
+
+puts "=== gokvm network performance test ==="
+puts "Guest: $guest_ip  Host: $host_ip  Tap: $tap"
+
+spawn ./gokvm boot -c 1 -k ./kernel_cpu -i ./initrd -t $tap -p '$cmdline'
+set vm $spawn_id
+
+expect {
+    "Setting console log level" {}
+    timeout {
+        puts "FAIL: boot timeout"
+        exit 1
+    }
+}
+sleep 3
+
+# Configure eth0 in the guest (gosh shell does not source .bashrc)
+send "ip link set eth0 up\r"
+sleep 1
+send "ip addr add ${guest_ip}/24 dev eth0\r"
+sleep 1
+
+# Start iperf3 server in the VM background
+send "iperf3 -s -D\r"
+sleep 1
+
+# Verify connectivity with ping (guest -> host)
+send "ping -c 3 $host_ip\r"
+expect {
+    "3 received"  { puts "PASS: ping host OK" }
+    "2 received"  { puts "PASS: ping host OK (2/3)" }
+    "1 received"  { puts "WARN: ping partial" }
+    timeout       { puts "WARN: ping timeout — continuing anyway" }
+}
+sleep 1
+
+puts "\n=== TCP guest RX (host->guest, 5s) ==="
+spawn iperf3 -c $guest_ip -t 5
+expect {
+    -re {(\d+\.?\d+)\s+Gbits/sec.*receiver} {
+        puts "RX: $expect_out(1,string) Gbits/sec"
+    }
+    -re {(\d+\.?\d+)\s+Mbits/sec.*receiver} {
+        puts "RX: $expect_out(1,string) Mbits/sec"
+    }
+    timeout { puts "RX: timeout" }
+}
+expect eof
+
+puts "\n=== TCP guest TX (guest->host, 5s, reverse) ==="
+spawn iperf3 -c $guest_ip -t 5 -R
+expect {
+    -re {(\d+\.?\d+)\s+Gbits/sec.*sender} {
+        puts "TX: $expect_out(1,string) Gbits/sec"
+    }
+    -re {(\d+\.?\d+)\s+Mbits/sec.*sender} {
+        puts "TX: $expect_out(1,string) Mbits/sec"
+    }
+    timeout { puts "TX: timeout" }
+}
+expect eof
+
+puts "\n=== UDP latency (1Mbit, 3s) ==="
+spawn iperf3 -c $guest_ip -u -b 1M -t 3
+expect {
+    -re {(\d+\.?\d+) ms.*(\d+)/(\d+)} {
+        puts "UDP jitter: $expect_out(1,string) ms  loss: $expect_out(2,string)/$expect_out(3,string)"
+    }
+    timeout { puts "UDP: timeout" }
+}
+expect eof
+
+puts "\n=== Done ==="
+send -i $vm "\x01x"
+expect eof

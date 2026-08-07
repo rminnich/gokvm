@@ -24,7 +24,6 @@ if [ $? -ne 0 ]; then
   pwd=$(pwd)
   (cd ${GOPATH}/src/github.com/u-root/u-root && \
     u-root \
-    -defaultsh `which bash` \
     -o ${pwd}/initrd \
     -files `which ethtool` \
     -files `which lspci` \
@@ -38,6 +37,7 @@ if [ $? -ne 0 ]; then
     -files `which awk` \
     -files `which grep` \
     -files `which cut` \
+    -files `which iperf3` \
     -files "/usr/share/terminfo/l/linux-c:/usr/share/terminfo/l/linux" \
     -files "/usr/share/misc/pci.ids" \
     -files "${pwd}/.bashrc:.bashrc" \
