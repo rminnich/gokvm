@@ -166,6 +166,21 @@ func (m *Machine) initIOPortHandlers() {
 		return fmt.Errorf("%w: unexpected io port 0x%x", kvm.ErrUnexpectedExitReason, port)
 	}
 
+	// 0xCF9 port can get three values for three types of reset:
+	//
+	// Writing 4 to 0xCF9:(INIT) Will INIT the CPU. Meaning it will jump
+	// to the initial location of booting but it will keep many CPU
+	// elements untouched. Most internal tables, chaches etc will remain
+	// unchanged by the Init call (but may change during it).
+	//
+	// Writing 6 to 0xCF9:(RESET) Will RESET the CPU with all
+	// internal tables caches etc cleared to initial state.
+	//
+	// Writing 0xE to 0xCF9:(RESTART) Will power cycle the mother board
+	// with everything that comes with it.
+	// For now, we will exit without regard to the value. Should we wish
+	// to have more sophisticated cf9 handling, we will need to modify
+	// gokvm a bit more.
 	funcOutbCF9 := func(port uint64, bytes []byte) error {
 		if len(bytes) == 1 && bytes[0] == 0xe {
 			return fmt.Errorf("write 0xe to cf9: %w", ErrWriteToCF9)
@@ -174,27 +189,41 @@ func (m *Machine) initIOPortHandlers() {
 		return fmt.Errorf("write %#x to cf9: %w", bytes, ErrWriteToCF9)
 	}
 
+	// In ubuntu 20.04 on wsl2, the output to IO port 0x64 continued
+	// infinitely. To deal with this issue, refer to kvmtool and
+	// configure the input to the Status Register of the PS2 controller.
+	//
+	// refs:
+	// https://github.com/kvmtool/kvmtool/blob/0e1882a49f81cb15d328ef83a78849c0ea26eecc/hw/i8042.c#L312
+	// https://git.kernel.org/pub/scm/linux/kernel/git/will/kvmtool.git/tree/hw/i8042.c#n312
+	// https://wiki.osdev.org/%228042%22_PS/2_Controller
 	funcInbPS2 := func(port uint64, bytes []byte) error {
 		bytes[0] = 0x20
 
 		return nil
 	}
 
-	m.registerIOPortHandler(0, 0x10000, funcError, funcError)
-	m.registerIOPortHandler(0xcf9, 0xcfa, funcNone, funcOutbCF9)
-	m.registerIOPortHandler(0x3c0, 0x3db, funcNone, funcNone)
-	m.registerIOPortHandler(0x3b4, 0x3b6, funcNone, funcNone)
-	m.registerIOPortHandler(0x2f8, 0x300, funcNone, funcNone)
-	m.registerIOPortHandler(0x3e8, 0x3f0, funcNone, funcNone)
-	m.registerIOPortHandler(0x2e8, 0x2f0, funcNone, funcNone)
-	m.registerIOPortHandler(0xcfe, 0xcff, funcNone, funcNone)
-	m.registerIOPortHandler(0xcfa, 0xcfc, funcNone, funcNone)
-	m.registerIOPortHandler(0xc000, 0xd000, funcNone, funcNone)
-	m.registerIOPortHandler(0x60, 0x70, funcInbPS2, funcNone)
-	m.registerIOPortHandler(0xed, 0xee, funcNone, funcNone)
+	m.registerIOPortHandler(0, 0x10000, funcError, funcError)    // default handler
+	m.registerIOPortHandler(0xcf9, 0xcfa, funcNone, funcOutbCF9) // CF9
+	m.registerIOPortHandler(0x3c0, 0x3db, funcNone, funcNone)    // VGA
+	m.registerIOPortHandler(0x3b4, 0x3b6, funcNone, funcNone)    // VGA
+	m.registerIOPortHandler(0x2f8, 0x300, funcNone, funcNone)    // Serial port 2
+	m.registerIOPortHandler(0x3e8, 0x3f0, funcNone, funcNone)    // Serial port 3
+	m.registerIOPortHandler(0x2e8, 0x2f0, funcNone, funcNone)    // Serial port 4
+	m.registerIOPortHandler(0xcfe, 0xcff, funcNone, funcNone)    // unknown
+	m.registerIOPortHandler(0xcfa, 0xcfc, funcNone, funcNone)    // unknown
+	m.registerIOPortHandler(0xc000, 0xd000, funcNone, funcNone)  // PCI Configuration Space Access Mechanism #2
+	m.registerIOPortHandler(0x60, 0x70, funcInbPS2, funcNone)    // PS/2 Keyboard (Always 8042 Chip)
+	m.registerIOPortHandler(0xed, 0xee, funcNone, funcNone)      // 0xed is the new standard delay port.
 
+	// Serial port 1
 	m.registerIOPortHandler(serial.COM1Addr, serial.COM1Addr+8, m.serial.In, m.serial.Out)
 
+	// PCI configuration
+	//
+	// 0xcf8 for address register for PCI Config Space
+	// 0xcfc + 0xcff for data for PCI Config Space
+	// see https://github.com/torvalds/linux/blob/master/arch/x86/pci/direct.c for more detail.
 	m.registerIOPortHandler(0xcf8, 0xcf9, m.pci.PciConfAddrIn, m.pci.PciConfAddrOut)
 	m.registerIOPortHandler(0xcfc, 0xd00, m.pci.PciConfDataIn, m.pci.PciConfDataOut)
 

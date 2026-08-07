@@ -320,6 +320,7 @@ func (m *Machine) initCPUID(cpu int) error {
 		return err
 	}
 
+	// https://www.kernel.org/doc/html/latest/virt/kvm/cpuid.html
 	for i := 0; i < int(cpuid.Nent); i++ {
 		switch cpuid.Entries[i].Function {
 		case kvm.CPUIDFuncPerMon:
@@ -362,6 +363,20 @@ func (m *Machine) SingleStep(onoff bool) error {
 // When the machine is stopped (via Close/Signal), it captures the vCPU
 // register state into an AMD64State before returning.
 func (m *Machine) RunInfiniteLoop(cpu int) error {
+	// https://www.kernel.org/doc/Documentation/virtual/kvm/api.txt
+	// - vcpu ioctls: These query and set attributes that control the operation
+	//   of a single virtual cpu.
+	//
+	//   vcpu ioctls should be issued from the same thread that was used to create
+	//   the vcpu, except for asynchronous vcpu ioctl that are marked as such in
+	//   the documentation.  Otherwise, the first ioctl after switching threads
+	//   could see a performance impact.
+	//
+	// - device ioctls: These query and set attributes that control the operation
+	//   of a single device.
+	//
+	//   device ioctls must be issued from the same process (address space) that
+	//   was used to create the VM.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -423,6 +438,8 @@ func (m *Machine) RunOnce(cpu int) (bool, error) {
 	case kvm.EXITUNKNOWN:
 		return true, err
 	case kvm.EXITINTR:
+		// When a signal is sent to the thread hosting the VM it will result in EINTR
+		// refs https://gist.github.com/mcastelino/df7e65ade874f6890f618dc51778d83a
 		return true, nil
 	case kvm.EXITDEBUG:
 		return false, kvm.ErrDebug
@@ -670,6 +687,7 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 		}
 	}
 
+	// refs https://github.com/kvmtool/kvmtool/blob/0e1882a49f81cb15d328ef83a78849c0ea26eecc/x86/bios.c#L66-L86
 	bootParam.AddE820Entry(bootparam.RealModeIvtBegin, bootparam.EBDAStart-bootparam.RealModeIvtBegin, bootparam.E820Ram)
 	bootParam.AddE820Entry(bootparam.EBDAStart, bootparam.VGARAMBegin-bootparam.EBDAStart, bootparam.E820Reserved)
 	bootParam.AddE820Entry(bootparam.MBBIOSBegin, bootparam.MBBIOSEnd-bootparam.MBBIOSBegin, bootparam.E820Reserved)
@@ -699,6 +717,14 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 
 	switch isElfFile {
 	case false:
+		// Load kernel
+		// copy to g.mem with offset setupsz
+		//
+		// The 32-bit (non-real-mode) kernel starts at offset (setup_sects+1)*512 in
+		// the kernel file (again, if setup_sects == 0 the real value is 4.) It should
+		// be loaded at address 0x10000 for Image/zImage kernels and highMemBase for bzImage kernels.
+		//
+		// refs: https://www.kernel.org/doc/html/latest/x86/boot.html#loading-the-rest-of-the-kernel
 		setupsz := int(bootParam.Hdr.SetupSects+1) * 512
 
 		kernSize, err = kernel.ReadAt(m.mem[DefaultKernelAddr:], int64(setupsz))
