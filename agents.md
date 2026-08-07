@@ -179,15 +179,15 @@ tids tracked in `m.tids []int32`, set by `RunInfiniteLoop` after `LockOSThread`.
 
 **IRQ routing**: EBDA MP table now has Bus (ISA), IOAPIC, and 16 I/O interrupt source entries. Eliminates `BIOS bug, no explicit IRQ entries` kernel message. `nr_irqs` now 48 (was 24). Implemented in `ebda/ebda_amd64.go`.
 
-**Networking**: initrd uses u-root's default gosh shell (removed `-defaultsh bash`). gosh does not source `.bashrc`, so `make net-test` configures eth0 directly in the guest. virtio-net iperf3 results (kernel_cpu, tap):
+**Networking**: initrd uses u-root's default gosh shell (removed `-defaultsh bash`). gosh does not source `.bashrc`, so `make net-test` configures eth0 directly in the guest. virtio-net iperf3 results (kernel_cpu, tap, single stream):
 
-| Test | gokvm | lkvm |
-|---|---|---|
-| TCP guest RX (host→guest) | ~1.0 Gbits/s | ~27 Gbits/s |
-| TCP guest TX (guest→host) | ~540 Mbits/s | ~22 Gbits/s |
-| UDP jitter / loss | 0ms / 0% | 0ms / 0% |
+| Test | gokvm baseline | gokvm optimized | lkvm |
+|---|---|---|---|
+| TCP guest RX (host→guest) | ~1.0 Gbits/s | ~5.4–6.7 Gbits/s | ~27 Gbits/s |
+| TCP guest TX (guest→host) | ~540 Mbits/s | ~3.8–4.3 Gbits/s | ~22 Gbits/s |
+| UDP jitter / loss | 0ms / 0% | 0ms / 0% | 0ms / 0% |
 
-lkvm is ~27–40x faster: modern virtio + MSI-X + vhost vs gokvm legacy virtio-net over I/O ports. Compare via `make net-test` (gokvm) and `make net-test-lkvm`.
+Optimizations (commits f06b448, 175c242): QueueSize 32→256 (vring_size(256,4096)=10246 bytes), RX drains the tap and injects one IRQ per batch with a reused buffer, TX accumulates descriptor chains into one reused buffer, and VIRTIO_RING_F_EVENT_IDX is advertised and honored (used_event suppresses IRQs, avail_event written back so the guest keeps kicking). Remaining gap to lkvm is the modern virtio-pci MMIO + MSI-X interface. Compare via `make net-test` (gokvm) and `make net-test-lkvm`.
 
 **Phase 1 (save)**: WORKING. `^A^Z` → saves synchronously → `os.Exit(0)`. ~1G gob file.
 Saves: guest RAM, CPU Regs+Sregs per vCPU, serial IER+LCR.
@@ -243,5 +243,6 @@ make net-test-lkvm  # same iperf3 harness against lkvm for comparison
 - [x] Exponential doubling for poison (~14x faster than loop copy)
 - [x] Lean cmdline — removed notsc/debug/dyndbg; ~2.7s boot (was minutes)
 - [x] net-test — iperf3 over virtio-net tap; gosh default shell; TX 475M/RX 1.1G
+- [x] virtio-net perf: QueueSize 256, batched RX IRQ, reused buffers, event_idx — RX 5.4–6.7G / TX 3.8–4.3G
 - [ ] Save/restore via file — paused (tty software state crash on resume)
 - [ ] ppc64le/s390x stubs (trivial)
