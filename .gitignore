@@ -29,3 +29,4 @@ CLOUDHV.fd
 # Dependency directories (remove the comment below to include it)
 # vendor/
 _linux/
+*.swp
