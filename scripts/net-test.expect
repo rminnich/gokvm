@@ -1,31 +1,30 @@
 #!/usr/bin/env expect
-# Network performance test for gokvm.
+# Network performance test for a KVM VMM (gokvm or lkvm).
 #
-# This script must run inside a private network namespace where the tap
-# interface already exists. The Makefile net-test target sets that up:
+# Usage: net-test.expect <label> <vmm command...>
 #
-#   unshare --user --net --map-root-user sh -c '
-#       ip link set lo up
-#       ip tuntap add tap0 mode tap
-#       ip addr add 192.168.20.2/24 dev tap0
-#       ip link set tap0 up
-#       expect scripts/net-test.expect
-#   '
-#
-# Running inside the netns lets host-side iperf3 clients (spawned by expect)
-# reach the guest through the tap.
+# The vmm command is spawned inside a private network namespace where the
+# tap interface (tap0, 192.168.20.2/24) already exists; see net-test.sh.
+# Host-side iperf3 clients (spawned here) reach the guest through the tap.
+# iperf3 server runs inside the guest; the script configures eth0 in the
+# guest because the u-root gosh shell does not source .bashrc.
+
+if {[llength $argv] < 2} {
+    puts "usage: net-test.expect <label> <vmm command...>"
+    exit 1
+}
+
+set label [lindex $argv 0]
+set cmd [lrange $argv 1 end]
 
 set timeout 60
 set guest_ip "192.168.20.1"
 set host_ip  "192.168.20.2"
-set tap      "tap0"
-set netparam "gokvm.ipv4_addr=${guest_ip}/24"
-set cmdline  "console=ttyS0 earlyprintk=serial noapic noacpi pci=conf1 reboot=k panic=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 mitigations=off pci=realloc=off virtio_pci.force_legacy=1 rdinit=/init init=/init kunit.enable=0 $netparam"
 
-puts "=== gokvm network performance test ==="
-puts "Guest: $guest_ip  Host: $host_ip  Tap: $tap"
+puts "=== $label network performance test ==="
+puts "Guest: $guest_ip  Host: $host_ip  Tap: tap0"
 
-spawn ./gokvm boot -c 1 -k ./kernel_cpu -i ./initrd -t $tap -p '$cmdline'
+spawn {*}$cmd
 set vm $spawn_id
 
 expect {

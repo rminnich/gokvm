@@ -120,9 +120,23 @@ build-otherarch: build-arm64 build-riscv64
 test-save-restore: gokvm initrd kernel_cpu
 	expect scripts/save-restore-test.expect
 
+# Kernel command line used by the net-test targets.
+NETTEST_CMDLINE := console=ttyS0 earlyprintk=serial noapic noacpi pci=conf1 \
+	reboot=k panic=1 i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 \
+	i8042.noaux=1 mitigations=off pci=realloc=off virtio_pci.force_legacy=1 \
+	rdinit=/init init=/init kunit.enable=0 gokvm.ipv4_addr=192.168.20.1/24
+
 .PHONY: net-test
 net-test: gokvm initrd kernel_cpu
-	./scripts/net-test.sh
+	./scripts/net-test.sh gokvm \
+		./gokvm boot -c 1 -k ./kernel_cpu -i ./initrd \
+		-t tap0 -p "$(NETTEST_CMDLINE)"
+
+.PHONY: net-test-lkvm
+net-test-lkvm: initrd kernel_cpu
+	./scripts/net-test.sh lkvm \
+		~/bin/lkvm run -k ./kernel_cpu -i ./initrd \
+		-m 1024 -c 1 -n mode=tap,tapif=tap0 -p "$(NETTEST_CMDLINE)"
 
 .PHONY: clean
 clean:
