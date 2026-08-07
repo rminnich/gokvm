@@ -33,14 +33,12 @@ func parseBootArgs(args []string) (*BootArgs, error) {
 	bootCmd.StringVar(&c.Initrd, "i", "", "initrd path")
 	//  refs: commit 1621292e73770aabbc146e72036de5e26f901e86 in kvmtool
 	bootCmd.StringVar(&c.Params, "p", `console=ttyS0 earlyprintk=serial `+
-		`noapic noacpi notsc nowatchdog `+
-		`nmi_watchdog=0 debug apic=debug show_lapic=all mitigations=off `+
-		`lapic tsc_early_khz=2000 `+
-		`dyndbg="file arch/x86/kernel/smpboot.c +plf ; file drivers/net/virtio_net.c +plf" `+
+		`noapic noacpi pci=conf1 reboot=k panic=1 `+
+		`i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 `+
+		`mitigations=off `+
 		`pci=realloc=off `+
 		`virtio_pci.force_legacy=1 rdinit=/init init=/init `+
-		`kunit.enable=0 `+
-		`gokvm.ipv4_addr=192.168.20.1/24`,
+		`kunit.enable=0`,
 		"kernel command-line parameters")
 	bootCmd.StringVar(&c.TapIfName, "t", "", `name of tap interface. `+
 		`If the string is an empty, no tap intarface is created. (default"")`)
