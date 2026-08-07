@@ -737,6 +737,18 @@ func (m *Machine) LoadLinux(kernel, initrd io.ReaderAt, params string) error {
 		return err
 	}
 
+	if err := m.SetupDevices(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// SetupDevices initialises the serial console, CMOS, and IO port handlers.
+// Called at the end of LoadLinux/LoadPVH and also on resume (Load).
+func (m *Machine) SetupDevices() error {
+	var err error
+
 	if m.serial, err = serial.New(m); err != nil {
 		return err
 	}

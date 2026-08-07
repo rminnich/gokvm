@@ -52,6 +52,9 @@ func (v *amd64VMM) Setup() error {
 		if err := v.m.Load(v.c.Resume); err != nil {
 			return fmt.Errorf("resume: %w", err)
 		}
+		if err := v.m.SetupDevices(); err != nil {
+			return fmt.Errorf("resume SetupDevices: %w", err)
+		}
 		log.Printf("Resumed from %s", v.c.Resume)
 		return nil
 	}
