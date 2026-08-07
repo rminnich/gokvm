@@ -116,7 +116,7 @@ build-riscv64:
 build-otherarch: build-arm64 build-riscv64
 
 .PHONY: test-save-restore
-test-save-restore: gokvm initrd
+test-save-restore: gokvm initrd kernel_cpu
 	expect scripts/save-restore-test.expect
 
 .PHONY: clean
