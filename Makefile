@@ -98,6 +98,13 @@ test: bzImage vmlinux vmlinux_PVH initrd vda.img CLOUDHV.fd
 build-arm64:
 	GOARCH=arm64 go build ./...
 
+.PHONY: build-riscv64
+build-riscv64:
+	GOARCH=riscv64 go build ./...
+
+.PHONY: build-otherarch
+build-otherarch: build-arm64 build-riscv64
+
 .PHONY: test-save-restore
 test-save-restore: gokvm initrd
 	expect scripts/save-restore-test.expect
