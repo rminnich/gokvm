@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"os"
+	"sync/atomic"
 
 	"github.com/bobuhiro11/gokvm/kvm"
 )
@@ -16,7 +17,17 @@ type VMState struct {
 }
 
 // Save snapshots guest RAM and all vCPU register state to path.
+// It sets ImmediateExit=1 on all vCPUs to ensure kvm.Run returns,
+// making the vcpu fds available for GetRegs/GetSregs.
+// The caller is expected to exit after Save returns.
 func (m *Machine) Save(path string) error {
+	// Kick all vCPUs out of kvm.Run and stop them so GetRegs/GetSregs
+	// can ioctl the vcpu fds without deadlocking.
+	atomic.StoreUint32(&m.stopped, 1)
+	for _, r := range m.runs {
+		r.ImmediateExit = 1
+	}
+
 	state := &VMState{
 		Mem:   make([]byte, len(m.mem)),
 		Regs:  make([]*kvm.Regs, len(m.vcpuFds)),

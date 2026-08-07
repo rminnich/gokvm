@@ -149,14 +149,15 @@ func (s *Serial) Start(in bufio.Reader, restoreMode func(), irqInject func() err
 
 		if before == 0x1 && b == 'x' {
 			restoreMode()
-
-			break
+			os.Exit(0)
 		}
 
 		if before == 0x1 && b == 0x1a {
 			if err := save(); err != nil {
 				log.Printf("save: %v", err)
 			}
+			restoreMode()
+			os.Exit(0)
 		}
 
 		before = b

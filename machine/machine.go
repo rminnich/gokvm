@@ -69,18 +69,12 @@ func newPCI() *pci.PCI {
 	return pci.New(pci.NewBridge())
 }
 
-// Close stops vCPU goroutines and releases resources.
+// Close stops vCPU goroutines and releases PCI device resources.
 func (m *Machine) Close() error {
 	atomic.StoreUint32(&m.stopped, 1)
 
 	for _, r := range m.runs {
 		r.ImmediateExit = 1
-	}
-
-	// Close all vCPU fds. This causes any blocked kvm.Run ioctl on those
-	// fds to return immediately with an error, unblocking the vCPU goroutines.
-	for _, fd := range m.vcpuFds {
-		syscall.Close(int(fd))
 	}
 
 	for _, d := range m.pci.Devices {

@@ -130,8 +130,6 @@ func (v *amd64VMM) Boot() error {
 	g.Go(func() error {
 		err := v.m.GetSerial().Start(*in, restoreMode, v.m.InjectSerialIRQ, save)
 		log.Printf("Serial exits: %v", err)
-		// Stop all vCPUs so g.Wait() unblocks.
-		v.m.Close()
 		return err
 	})
 
