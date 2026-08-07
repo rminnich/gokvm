@@ -136,7 +136,24 @@ make build-riscv64 # GOARCH=riscv64 go build ./...
 make build-otherarch # both
 ```
 
-## Save/Restore (paused)
+## AMD64State (machine/archstate_amd64.go)
+
+Captured automatically when `RunInfiniteLoop` exits with `ErrMachineStopped`:
+
+```go
+type AMD64State struct {
+    GPR    map[x86asm.Reg]uint64  // RAX..R15, RIP via x86asm constants
+    RFLAGS uint64
+    Sregs  kvm.Sregs              // CR0,CR3,CR4,EFER,segments,etc.
+}
+
+// Retrieve after Close():
+state := machine.GetAMD64State()  // nil if not yet captured
+```
+
+First vCPU to stop wins. Stored atomically via `Machine.StoreArchState`/`LoadArchState` (unsafe.Pointer).
+
+
 
 - `^A^Z` triggers save but `kvm.GetRegs(fd)` deadlocks with running vCPU on same fd
 - `Save()` sets `stopped=1` + `ImmediateExit=1` before `GetRegs` — race still possible
@@ -154,6 +171,8 @@ make build-otherarch # both
 - [x] Runner interface — Init/Setup/Boot/Close/Info
 - [x] VMInfo struct — arch-neutral with CPUID on amd64
 - [x] Close() — tgkill SIGHUP to vCPU threads (WORKING)
+- [x] Machine.Signal(syscall.Signal) — send any signal to all vCPU threads
+- [x] AMD64State — x86asm.Reg GPR map + kvm.Sregs, captured on ErrMachineStopped
 - [x] arm64 stub — Close()/Info()
 - [x] riscv64 stub — Close()/Info()
 - [x] ^A^X / ^A^Z — serial breaks, calls Close(), clean exit
