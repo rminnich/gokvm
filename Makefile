@@ -123,6 +123,10 @@ test-save-restore: gokvm initrd kernel_cpu
 clean:
 	rm -rf ./gokvm ./golangci-lint bzImage* vmlinux* CLOUDHV.fd _linux *_string.go
 
+.PHONY: lkvm
+lkvm: initrd kernel_cpu
+	~/bin/lkvm run -k ./kernel_cpu -i ./initrd
+
 .PHONY: qemu
 qemu: initrd bzImage
 	qemu-system-x86_64 -kernel ./bzImage -initrd ./initrd --nographic --enable-kvm \
