@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 
+	"github.com/bobuhiro11/gokvm/kvm"
 	"github.com/bobuhiro11/gokvm/machine"
 	"github.com/bobuhiro11/gokvm/pvh"
 	"github.com/bobuhiro11/gokvm/term"
@@ -142,4 +144,51 @@ func (v *amd64VMM) Boot() error {
 	fmt.Printf("All cpus done\n\r")
 
 	return nil
+}
+
+// Close stops the amd64 VMM by calling machine.Close(), which sets
+// ImmediateExit and sends SIGUSR1 to each vCPU thread via tgkill.
+func (v *amd64VMM) Close() error {
+	if v.m == nil {
+		return nil
+	}
+
+	return v.m.Close()
+}
+
+// Info returns architecture-defined information about this VMM.
+// On amd64 it includes the CPUID entries from KVM.
+func (v *amd64VMM) Info() VMInfo {
+	info := VMInfo{
+		Arch:       runtime.GOARCH,
+		NCPUs:      v.c.NCPUs,
+		MemSize:    v.c.MemSize,
+		KernelPath: v.c.Kernel,
+	}
+
+	if v.m == nil {
+		return info
+	}
+
+	// Populate CPUID entries from KVM.
+	cpuid := kvm.CPUID{
+		Nent:    100,
+		Entries: make([]kvm.CPUIDEntry2, 100),
+	}
+
+	if err := kvm.GetSupportedCPUID(v.m.KvmFd(), &cpuid); err == nil {
+		for i := 0; i < int(cpuid.Nent); i++ {
+			e := cpuid.Entries[i]
+			info.CPUIDEntries = append(info.CPUIDEntries, CPUIDEntry{
+				Function: e.Function,
+				Index:    e.Index,
+				Eax:      e.Eax,
+				Ebx:      e.Ebx,
+				Ecx:      e.Ecx,
+				Edx:      e.Edx,
+			})
+		}
+	}
+
+	return info
 }

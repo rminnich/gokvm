@@ -62,6 +62,9 @@ type Machine struct {
 	devices        []iodev.Device
 	ioportHandlers [0x10000][2]func(port uint64, bytes []byte) error
 	stopped        uint32
+	// tids holds the OS thread ID of each vCPU goroutine, set when
+	// RunInfiniteLoop locks its OS thread. Used by Close() to tgkill.
+	tids []int32
 }
 
 // newPCI creates a new PCI bus with a bridge.
@@ -70,11 +73,21 @@ func newPCI() *pci.PCI {
 }
 
 // Close stops vCPU goroutines and releases PCI device resources.
+// It sends SIGUSR1 to each vCPU thread (via tgkill) to interrupt any
+// blocked kvm.Run ioctl with EINTR, causing RunOnce to check isStopped.
 func (m *Machine) Close() error {
 	atomic.StoreUint32(&m.stopped, 1)
 
 	for _, r := range m.runs {
 		r.ImmediateExit = 1
+	}
+
+	pid := syscall.Getpid()
+	for _, tid := range m.tids {
+		if tid != 0 {
+			// tgkill(tgid, tid, SIGUSR1) — interrupts the blocked kvm.Run ioctl.
+			syscall.Tgkill(pid, int(tid), syscall.SIGUSR1)
+		}
 	}
 
 	for _, d := range m.pci.Devices {
@@ -297,6 +310,11 @@ func (m *Machine) VtoP(cpu int, vaddr uint64) (int64, error) {
 
 func (m *Machine) GetSerial() *serial.Serial {
 	return m.serial
+}
+
+// KvmFd returns the KVM device file descriptor.
+func (m *Machine) KvmFd() uintptr {
+	return m.kvmFd
 }
 
 func (m *Machine) AddDevice(dev iodev.Device) {

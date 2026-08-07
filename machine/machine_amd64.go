@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -106,6 +107,9 @@ func New(kvmPath string, nCpus int, memSize int) (*Machine, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Allocate tid slots for each vCPU goroutine.
+	m.tids = make([]int32, nCpus)
 
 	for cpuNr := range m.runs {
 		if err := m.initCPUID(cpuNr); err != nil {
@@ -358,6 +362,10 @@ func (m *Machine) SingleStep(onoff bool) error {
 func (m *Machine) RunInfiniteLoop(cpu int) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+
+	// Record this goroutine's OS thread ID so Close() can tgkill it.
+	atomic.StoreInt32(&m.tids[cpu], int32(syscall.Gettid()))
+	defer atomic.StoreInt32(&m.tids[cpu], 0)
 
 	for {
 		isContinue, err := m.RunOnce(cpu)
