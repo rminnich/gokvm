@@ -22,21 +22,21 @@ Multi-architecture support and clean VM lifecycle via Runner interface.
 
 ## Boot Test Protocol
 
-30s timeout (60s for kernel_cpu). KVM on this machine is flaky — retry up to 3 times.
+30s timeout. KVM on this machine is flaky — retry up to 3 times.
 
-**make qemu:**
+**make lkvm (preferred — closest to gokvm):**
 ```
 expect -c '
 set timeout 30
-spawn qemu-system-x86_64 -kernel ./bzImage -initrd ./initrd --nographic --enable-kvm --append "root=/dev/ram rw console=ttyS0 rdinit=/init"
+spawn ~/bin/lkvm run -k ./kernel_cpu -i ./initrd
 expect "Setting console log level"
 sleep 1
 send "echo booted\r"
-expect { "booted" { puts "PASS: make qemu"; exit 0 } timeout { puts "FAIL"; exit 1 } }
+expect { "booted" { puts "PASS: lkvm"; exit 0 } timeout { puts "FAIL"; exit 1 } }
 '
 ```
 
-**make run-cpu (preferred):**
+**make run-cpu (gokvm with kernel_cpu):**
 ```
 expect -c '
 set timeout 60
@@ -45,6 +45,18 @@ expect "Setting console log level"
 sleep 3
 send "echo booted\r"
 expect { "booted" { puts "PASS: run-cpu"; exit 0 } timeout { puts "FAIL"; exit 1 } }
+'
+```
+
+**make qemu (fallback, bzImage):**
+```
+expect -c '
+set timeout 30
+spawn qemu-system-x86_64 -kernel ./bzImage -initrd ./initrd --nographic --enable-kvm --append "root=/dev/ram rw console=ttyS0 rdinit=/init"
+expect "Setting console log level"
+sleep 1
+send "echo booted\r"
+expect { "booted" { puts "PASS: qemu"; exit 0 } timeout { puts "FAIL"; exit 1 } }
 '
 ```
 
@@ -173,11 +185,13 @@ type VMState struct {
 ```
 make run           # bzImage, -c 2
 make run-cpu       # kernel_cpu, -c 1
-make qemu          # qemu with bzImage
+make lkvm          # lkvm run -k kernel_cpu (preferred test)
+make qemu          # qemu with bzImage (fallback)
 make kernel_cpu    # download u-root/cpu kernel
 make build-arm64   # GOARCH=arm64 go build ./...
 make build-riscv64 # GOARCH=riscv64 go build ./...
 make build-otherarch # both
+make test-save-restore # save/restore test with kernel_cpu
 ```
 
 ## Session State Checklist
