@@ -119,5 +119,6 @@ if before == 0x1 && b == 0x1a {
 - [x] Boot time improvement — `kunit.enable=0`
 - [x] Architecture factoring — `_amd64.go`; `Runner` interface; arm64 build
 - [x] Clean exit on ^A^X — DONE via `os.Exit(0)` in serial.Start
+- [x] riscv64 support — `vmm_riscv64.go` stub; `make build-riscv64` target
 - [ ] Save/restore test — BLOCKED: kvm.GetRegs deadlocks with running vCPUs
 - [ ] Better kernel — Linux 7.0 available but root-only; investigate
