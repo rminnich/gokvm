@@ -27,7 +27,21 @@ var (
 const (
 	NetIOPortStart = 0x6200
 	NetIOPortSize  = 0x100
+
+	// VIRTIO_RING_F_EVENT_IDX: suppress notifications
+	// using used_event/avail_event indices.
+	// refs https://docs.oasis-open.org/virtio/virtio/v1.1/cs01/virtio-v1.1-cs01.html#x1-280005
+	virtioRingFEventIdx = 1 << 29
 )
+
+// vringNeedEvent returns true when the ring index advancing
+// from old to new requires a notification, given the peer's
+// last observed index event.
+//
+// refs https://github.com/torvalds/linux/blob/master/drivers/virtio/virtio_ring.c
+func vringNeedEvent(event, new, old uint16) bool {
+	return uint16(new-event-1) < uint16(new-old)
+}
 
 type netHdr struct {
 	commonHeader commonHeader
@@ -45,6 +59,8 @@ type Net struct {
 
 	rxBuf []byte // reused RX buffer: 10-byte virtio_net_hdr + packet
 	txBuf []byte // reused TX accumulation buffer
+
+	useEventIdx bool
 
 	txKick    chan interface{}
 	rxKick    chan os.Signal
@@ -134,6 +150,15 @@ func (v *Net) RxThreadEntry() {
 // RxDrain delivers as many packets as are available and
 // injects a single IRQ for the whole batch.
 func (v *Net) RxDrain() error {
+	const sel = 0
+
+	if v.VirtQueue[sel] == nil {
+		return ErrVQNotInit
+	}
+
+	usedRing := &v.VirtQueue[sel].UsedRing
+	old := LoadU16(&usedRing.Idx)
+
 	injected := false
 
 	for v.Rx() == nil {
@@ -142,6 +167,21 @@ func (v *Net) RxDrain() error {
 
 	if !injected {
 		return ErrNoRxPacket
+	}
+
+	if v.useEventIdx {
+		// tell the guest we have consumed the available
+		// buffers so it keeps kicking when posting more
+		v.VirtQueue[sel].UsedRing.availEvent = LoadU16(&v.VirtQueue[sel].AvailRing.Idx)
+
+		// the guest suppresses IRQs by setting used_event;
+		// skip the IRQ if it is already processing.
+		event := LoadU16(&v.VirtQueue[sel].AvailRing.UsedEvent)
+		new := LoadU16(&usedRing.Idx)
+
+		if !vringNeedEvent(event, new, old) {
+			return nil
+		}
 	}
 
 	return v.IRQInjector.InjectVirtioNetIRQ()
@@ -269,6 +309,8 @@ func (v *Net) Tx() error {
 		return ErrNoTxPacket
 	}
 
+	old := LoadU16(&usedRing.Idx)
+
 	for v.LastAvailIdx[sel] != LoadU16(&availRing.Idx) {
 		v.txBuf = v.txBuf[:0]
 		descID := availRing.Ring[v.LastAvailIdx[sel]%QueueSize]
@@ -315,6 +357,17 @@ func (v *Net) Tx() error {
 
 	v.Hdr.commonHeader.isr = 0x1
 
+	if v.useEventIdx {
+		v.VirtQueue[sel].UsedRing.availEvent = LoadU16(&v.VirtQueue[sel].AvailRing.Idx)
+
+		event := LoadU16(&v.VirtQueue[sel].AvailRing.UsedEvent)
+		new := LoadU16(&usedRing.Idx)
+
+		if !vringNeedEvent(event, new, old) {
+			return nil
+		}
+	}
+
 	return v.IRQInjector.InjectVirtioNetIRQ()
 }
 
@@ -322,6 +375,12 @@ func (v *Net) Write(port uint64, bytes []byte) error {
 	offset := int(port - NetIOPortStart)
 
 	switch offset {
+	case 4:
+		// Guest features: the guest accepts a subset of the
+		// device features. Track whether event_idx is used.
+		features := pci.BytesToNum(bytes)
+		v.Hdr.commonHeader.guestFeatures = uint32(features)
+		v.useEventIdx = features&virtioRingFEventIdx != 0
 	case 8:
 		// Queue PFN is aligned to page (4096 bytes)
 		sel := v.Hdr.commonHeader.queueSEL
@@ -383,8 +442,9 @@ func NewNet(irq uint8, irqInjector IRQInjector, tap io.ReadWriter, mem []byte) *
 	res := &Net{
 		Hdr: netHdr{
 			commonHeader: commonHeader{
-				queueNUM: QueueSize,
-				isr:      0x0,
+				hostFeatures: virtioRingFEventIdx,
+				queueNUM:     QueueSize,
+				isr:          0x0,
 			},
 		},
 		irq:          irq,

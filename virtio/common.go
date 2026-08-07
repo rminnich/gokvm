@@ -15,14 +15,14 @@ type IRQInjector interface {
 }
 
 type commonHeader struct {
-	_        uint32 // hostFeatures
-	_        uint32 // guestFeatures
-	_        uint32 // queuePFN
-	queueNUM uint16
-	queueSEL uint16
-	_        uint16 // queueNotify
-	_        uint8  // status
-	isr      uint8
+	hostFeatures  uint32
+	guestFeatures uint32
+	_             uint32 // queuePFN
+	queueNUM      uint16
+	queueSEL      uint16
+	_             uint16 // queueNotify
+	_             uint8  // status
+	isr           uint8
 }
 
 // refs: https://wiki.osdev.org/Virtio#Virtual_Queue_Descriptor
