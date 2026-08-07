@@ -6,7 +6,7 @@ const (
 	// the guest to the host will be stopped.
 	//
 	// refs https://github.com/torvalds/linux/blob/5859a2b/drivers/net/virtio_net.c#L1754
-	QueueSize = 32
+	QueueSize = 256
 )
 
 type IRQInjector interface {

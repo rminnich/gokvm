@@ -43,6 +43,9 @@ type Net struct {
 
 	tap io.ReadWriter
 
+	rxBuf []byte // reused RX buffer: 10-byte virtio_net_hdr + packet
+	txBuf []byte // reused TX accumulation buffer
+
 	txKick    chan interface{}
 	rxKick    chan os.Signal
 	done      chan struct{}
@@ -122,25 +125,45 @@ func (v *Net) RxThreadEntry() {
 
 			return
 		case <-v.rxKick:
-			for v.Rx() == nil {
+			for v.RxDrain() == nil {
 			}
 		}
 	}
 }
 
-func (v *Net) Rx() error {
-	// read raw packet from tap device
-	packet := make([]byte, 4096)
+// RxDrain delivers as many packets as are available and
+// injects a single IRQ for the whole batch.
+func (v *Net) RxDrain() error {
+	injected := false
 
-	n, err := v.tap.Read(packet)
+	for v.Rx() == nil {
+		injected = true
+	}
+
+	if !injected {
+		return ErrNoRxPacket
+	}
+
+	return v.IRQInjector.InjectVirtioNetIRQ()
+}
+
+func (v *Net) Rx() error {
+	if v.rxBuf == nil {
+		v.rxBuf = make([]byte, 10+65536)
+	}
+
+	// read raw packet from tap device
+	n, err := v.tap.Read(v.rxBuf[10:])
 	if err != nil {
 		return ErrNoRxPacket
 	}
 
-	packet = packet[:n]
+	packet := v.rxBuf[:10+n]
 
-	// append struct virtio_net_hdr
-	packet = append(make([]byte, 10), packet...)
+	// struct virtio_net_hdr: all zero. No offload is
+	// performed, and VIRTIO_NET_F_MRG_RXBUF is not
+	// negotiated, so num_buffers is not present.
+	clear(packet[:10])
 
 	sel := 0
 
@@ -202,7 +225,7 @@ func (v *Net) Rx() error {
 
 	v.Hdr.commonHeader.isr = 0x1
 
-	return v.IRQInjector.InjectVirtioNetIRQ()
+	return nil
 }
 
 func (v *Net) TxThreadEntry() {
@@ -247,7 +270,7 @@ func (v *Net) Tx() error {
 	}
 
 	for v.LastAvailIdx[sel] != LoadU16(&availRing.Idx) {
-		buf := []byte{}
+		v.txBuf = v.txBuf[:0]
 		descID := availRing.Ring[v.LastAvailIdx[sel]%QueueSize]
 
 		uidx := LoadU16(&usedRing.Idx)
@@ -257,10 +280,17 @@ func (v *Net) Tx() error {
 		for {
 			desc := v.VirtQueue[sel].DescTable[descID]
 
-			b := make([]byte, desc.Len)
-			copy(b, v.Mem[desc.Addr:desc.Addr+uint64(desc.Len)])
+			l := int(desc.Len)
+			off := len(v.txBuf)
 
-			buf = append(buf, b...)
+			if off+l > cap(v.txBuf) {
+				grown := make([]byte, off+l, 2*(off+l))
+				copy(grown, v.txBuf)
+				v.txBuf = grown
+			}
+
+			v.txBuf = v.txBuf[:off+l]
+			copy(v.txBuf[off:], v.Mem[desc.Addr:desc.Addr+uint64(l)])
 
 			usedRing.Ring[uidx%QueueSize].Len += desc.Len
 
@@ -273,7 +303,7 @@ func (v *Net) Tx() error {
 
 		// Skip struct virtio_net_hdr
 		// refs https://github.com/torvalds/linux/blob/38f80f42/include/uapi/linux/virtio_net.h#L178-L191
-		buf = buf[10:]
+		buf := v.txBuf[10:]
 
 		if _, err := v.tap.Write(buf); err != nil {
 			return err

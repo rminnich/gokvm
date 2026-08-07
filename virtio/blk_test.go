@@ -67,7 +67,7 @@ func TestBlkIOInHandler(t *testing.T) {
 		t.Fatalf("err: %v\n", err)
 	}
 
-	expected := []byte{0x20, 0x00}
+	expected := []byte{0x00, 0x01} // QueueSize = 256
 	actual := make([]byte, 2)
 	_ = v.Read(virtio.BlkIOPortStart+12, actual)
 

@@ -53,7 +53,7 @@ func TestNetGetIORange(t *testing.T) {
 func TestNetIOInHandler(t *testing.T) {
 	t.Parallel()
 
-	expected := []byte{0x20, 0x00}
+	expected := []byte{0x00, 0x01} // QueueSize = 256
 	v := virtio.NewNet(9, &mockInjector{}, bytes.NewBuffer([]byte{}), []byte{})
 	actual := make([]byte, 2)
 	_ = v.Read(virtio.NetIOPortStart+12, actual)
@@ -608,7 +608,7 @@ func TestRx(t *testing.T) {
 	// Size of struct virtio_net_hdr
 	const K = 10
 
-	if err := v.Rx(); err != nil {
+	if err := v.RxDrain(); err != nil {
 		t.Fatalf("err: %v\n", err)
 	}
 
