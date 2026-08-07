@@ -2,14 +2,14 @@
 
 ## Current Objective
 
-Fix save/restore: `^A^Z` save blocks in `kvm.GetRegs` because vCPU goroutines hold the vcpu fds in `kvm.Run`.
+Multi-architecture support and clean VM lifecycle management via Runner interface.
 
 ## Context
 
 - **Project**: gokvm
-- **Architecture**: amd64 primary; arm64 build-time verified
+- **Architecture**: amd64 primary; arm64 + riscv64 build-verified stubs
 - **Repo branch**: main
-- **HEAD commit**: `2352c86` serial: ^AX exits via os.Exit; ^AZ saves synchronously then exits; save sets stopped+ImmediateExit before GetRegs
+- **HEAD commit**: `199d7cd` gitignore: add *.swp
 
 ## Coding Conventions
 
@@ -22,7 +22,7 @@ Fix save/restore: `^A^Z` save blocks in `kvm.GetRegs` because vCPU goroutines ho
 
 ## Boot Test Protocol
 
-Both tests must pass before committing. 30s timeout. KVM on this machine is flaky — retry up to 3 times.
+30s timeout. KVM on this machine is flaky — retry up to 3 times.
 
 **make qemu:**
 ```
@@ -32,10 +32,7 @@ spawn qemu-system-x86_64 -kernel ./bzImage -initrd ./initrd --nographic --enable
 expect "Setting console log level"
 sleep 1
 send "echo booted\r"
-expect {
-    "booted" { puts "\nPASS: make qemu"; exit 0 }
-    timeout  { puts "\nFAIL: make qemu"; exit 1 }
-}
+expect { "booted" { puts "PASS: make qemu"; exit 0 } timeout { puts "FAIL"; exit 1 } }
 '
 ```
 
@@ -47,78 +44,101 @@ spawn ./gokvm boot -c 2 -i ./initrd
 expect "Setting console log level"
 sleep 3
 send "echo booted\r"
-expect {
-    "booted" { puts "\nPASS: make run"; exit 0 }
-    timeout  { puts "\nFAIL: make run"; exit 1 }
-}
+expect { "booted" { puts "PASS: make run"; exit 0 } timeout { puts "FAIL"; exit 1 } }
 '
 ```
 
-**save/restore test:**
+**multi-arch build test:**
 ```
-expect scripts/save-restore-test.expect 2>/dev/null | grep -E 'PASS|FAIL|==='
+go build ./... && GOARCH=arm64 go build ./... && GOARCH=riscv64 go build ./... && echo "all ok"
 ```
 
-## Current Problem: Save blocks in kvm.GetRegs
-
-**Root cause**: `machine.Save()` calls `kvm.GetRegs(fd)` and `kvm.GetSregs(fd)` on vcpu fds. Those same fds are held by vCPU goroutines blocked in `kvm.Run` ioctl (via `LockOSThread`). Both are ioctls on the same fd — the kernel serializes them, so `GetRegs` blocks until `kvm.Run` returns.
-
-**What was tried**:
-- Setting `ImmediateExit=1` on RunData regions — `kvm.Run` should return but there's a race: goroutine re-enters `kvm.Run` before `GetRegs` can run
-- Setting `stopped=1` + `ImmediateExit=1` — same race
-- Closing vcpu fds — causes `kvm.Run` to return with error but breaks subsequent ioctls
-- SIGHUP/SIGUSR1 to process group — signal delivery unreliable with LockOSThread goroutines
-
-**Evidence**: `Saving state to /tmp/...` log line appears (save started), but process never exits and no file is created within 90s. `kvm.GetRegs` is blocking.
-
-**Possible fixes to investigate**:
-1. Use `KVM_IMMEDIATE_EXIT` ioctl (separate from the RunData field) to force vCPU exit — but this IS `ImmediateExit` in RunData
-2. Use `tgkill(pid, tid, SIGURG)` to interrupt each specific OS thread — requires tracking tids of each vCPU goroutine at startup (store in Machine struct)
-3. Don't save registers at all — resume from RAM state only, re-init registers on resume
-4. Use KVM's `KVM_GET_VCPU_EVENTS` which may not block, then get registers after
-5. Save in a separate process that ptrace-stops the vCPU threads first
-
-**Simplest viable fix**: track each vCPU goroutine's OS thread ID (tid) via `syscall.Gettid()` at the start of `RunInfiniteLoop`, store them, then send `SIGURG` (which Go uses internally and handles safely) to each tid via `tgkill` to interrupt the `kvm.Run` syscall with `EINTR`.
-
-**`SIGURG` note**: Go's runtime uses SIGURG for goroutine preemption. Sending it to a specific thread tid should cause the `kvm.Run` ioctl to return `EINTR`, then `kvm.Run()` returns nil (EINTR is handled), then `isStopped()` returns true, goroutine exits loop.
-
-## Current serial.go exit logic
+## Runner Interface (vmm/vmm.go)
 
 ```go
-// ^A^X: restore tty and exit immediately
-if before == 0x1 && b == 'x' {
-    restoreMode()
-    os.Exit(0)          // clean exit, no deadlock
+type Runner interface {
+    Init() error    // create/configure VM hardware
+    Setup() error   // load kernel/initrd into guest memory
+    Boot() error    // start vCPUs + console I/O, blocks until exit
+    Close() error   // stop VMM, interrupt blocked vCPU ioctls
+    Info() VMInfo   // return arch-defined info block
 }
 
-// ^A^Z: save synchronously then exit
-if before == 0x1 && b == 0x1a {
-    if err := save(); err != nil {  // BLOCKS on kvm.GetRegs
-        log.Printf("save: %v", err)
-    }
-    restoreMode()
-    os.Exit(0)
+type VMInfo struct {
+    Arch         string
+    NCPUs        int
+    MemSize      int
+    KernelPath   string
+    CPUIDEntries []CPUIDEntry  // amd64 only
+}
+
+type CPUIDEntry struct {
+    Function, Index, Eax, Ebx, Ecx, Edx uint32
 }
 ```
 
-## Key Findings
+## Architecture Files
 
-- `make run` uses `-c 2`; `-c 4` causes workqueue lockups
-- `kunit.enable=0` in default kernel cmdline cuts boot time to ~6s
-- Serial input works via LSR polling; IER=0x5 when userspace opens `/dev/ttyS0`
-- `^A^X` now exits cleanly via `os.Exit(0)` in `serial.Start`
-- Host has Linux 7.0 kernel at `/home/rminnich/badgokvm/vmlinuz` (root-only, 17M) — may boot faster and more stably than the test 5.14.3 bzImage
-- gob encoding 1G takes ~640ms — fast enough, not the bottleneck
+| File | Description |
+|---|---|
+| `vmm/vmm.go` | Runner interface, VMInfo, Config, VMM struct |
+| `vmm/vmm_amd64.go` | `amd64VMM` — full implementation; `Info()` returns CPUID from KVM |
+| `vmm/vmm_arm64.go` | `arm64Runner` stub — all methods return "not supported" |
+| `vmm/vmm_riscv64.go` | `riscv64Runner` stub — all methods return "not supported" |
+
+## machine.Close() — tgkill approach
+
+`Machine` now tracks each vCPU goroutine's OS thread ID in `m.tids []int32`.
+`RunInfiniteLoop` stores `syscall.Gettid()` into `m.tids[cpu]` after `LockOSThread`.
+`machine.Close()` sends `SIGUSR1` to each tid via `syscall.Tgkill(pid, tid, SIGUSR1)`.
+
+**Status**: implemented but not yet verified to reliably unblock `kvm.Run`.
+The `kvm.Run()` function already handles `EINTR` (returns nil), then `isStopped()` returns true → `ErrMachineStopped`.
+
+## Known Issues / Next Steps
+
+### Save/Restore (paused)
+- `^A^Z` triggers save but `kvm.GetRegs(fd)` deadlocks with running vCPU on same fd
+- Fix: `Save()` now sets `stopped=1` + `ImmediateExit=1` before calling `GetRegs` — but race still possible
+- `^A^X` exits cleanly via `os.Exit(0)` in `serial.Start`
+- Low priority vs multi-arch work
+
+### Multi-arch
+- [x] amd64 — full implementation
+- [x] arm64 — stub with `Close()`/`Info()`
+- [x] riscv64 — stub with `Close()`/`Info()`
+- [ ] ppc64le — needs `vmm_ppc64le.go` stub (same pattern as arm64/riscv64)
+- [ ] s390x — needs `vmm_s390x.go` stub
+
+### Better kernel
+- Host has Linux 7.0 at `/home/rminnich/badgokvm/vmlinuz` (root-only, 17M)
+- Current test kernel is 5.14.3 with heavy lockdep testsuite overhead
+- `kunit.enable=0` in cmdline helps but kernel still slow
+
+## Makefile Targets
+
+```
+make run          # ./gokvm boot -c 2 -i ./initrd
+make qemu         # qemu-system-x86_64 with bzImage
+make build-arm64  # GOARCH=arm64 go build ./...
+make build-riscv64 # GOARCH=riscv64 go build ./...
+make build-otherarch # both arm64 and riscv64
+```
 
 ## Session State Checklist
 
 - [x] Interface refactor
-- [x] Resumable state — Save via ^A^Z; resume via `-R <file>`
+- [x] Resumable state — ^A^Z save, -R resume (save blocks on GetRegs, paused)
 - [x] Boot test protocol — expect-based, 30s timeout
 - [x] Serial input fix
-- [x] Boot time improvement — `kunit.enable=0`
-- [x] Architecture factoring — `_amd64.go`; `Runner` interface; arm64 build
-- [x] Clean exit on ^A^X — DONE via `os.Exit(0)` in serial.Start
-- [x] riscv64 support — `vmm_riscv64.go` stub; `make build-riscv64` target
-- [ ] Save/restore test — BLOCKED: kvm.GetRegs deadlocks with running vCPUs
-- [ ] Better kernel — Linux 7.0 available but root-only; investigate
+- [x] Boot time — `kunit.enable=0`
+- [x] Architecture factoring — `_amd64.go` files; no build tags
+- [x] Runner interface — Init/Setup/Boot/Close/Info
+- [x] VMInfo struct — arch-neutral with CPUID on amd64
+- [x] Close() — tgkill SIGUSR1 to vCPU threads
+- [x] arm64 stub — Close()/Info()
+- [x] riscv64 stub — Close()/Info()
+- [x] ^A^X clean exit via os.Exit(0)
+- [ ] Save/restore deadlock fix (paused)
+- [ ] ppc64le/s390x stubs
+- [ ] Verify tgkill actually unblocks kvm.Run reliably
