@@ -77,22 +77,27 @@ type Runner interface {
 ## vmm.Save / vmm.VCPUSave (vmm/save.go)
 
 ```go
-// VCPUSave holds per-vCPU register state for resume.
+// machine.Save (machine/save.go) — RAM captured once, shared across VMMs.
+type machine.Save struct {
+    Mem []byte   // snapshot of guest RAM
+}
+func (m *Machine) NewSave() *machine.Save  // captures RAM
+
+// vmm.Save — top-level save struct.
+type Save struct {
+    Arch    string
+    Machine *machine.Save  // guest RAM — one copy, not per-VMM
+    VCPUs   []VCPUSave     // per-vCPU register state
+}
+
 type VCPUSave struct {
     CPU  int
     Regs interface{}  // *machine.AMD64State on amd64; nil otherwise
 }
-
-// Save holds everything needed to resume a stopped VMM.
-type Save struct {
-    Arch  string
-    Mem   []byte      // snapshot of guest RAM (copy)
-    VCPUs []VCPUSave  // one entry per vCPU
-}
 ```
 
-`amd64VMM.Info()` — copies guest RAM via `machine.Mem()`, gets `*machine.AMD64State` per CPU via `machine.GetAMD64State()`.
-Stub arches return `&Save{Arch: runtime.GOARCH}`.
+`amd64VMM.Info()` calls `v.m.NewSave()` for RAM (once) and `GetAMD64State()` per CPU.
+Stub arches return `&Save{Arch: runtime.GOARCH}` with nil Machine.
 
 ## machine.AMD64State (machine/archstate_amd64.go)
 
