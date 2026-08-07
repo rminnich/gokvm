@@ -146,30 +146,25 @@ tids tracked in `m.tids []int32`, set by `RunInfiniteLoop` after `LockOSThread`.
 | `machine/archstate_amd64.go` | AMD64State, captureArchState, GetAMD64State |
 | `machine/state_amd64.go` | Save(path)/Load(path) gob file I/O (paused — GetRegs deadlock) |
 
-## Save/Restore Status
+## Save/Restore Status — PAUSED (good stopping point)
 
-**Phase 1 (save)**: WORKING. `^A^Z` → saves synchronously (ImmediateExit+GetRegs) → `os.Exit(0)`. ~1G gob file includes serial IER/LCR.
+**Phase 1 (save)**: WORKING. `^A^Z` → saves synchronously → `os.Exit(0)`. ~1G gob file.
+Saves: guest RAM, CPU Regs+Sregs per vCPU, serial IER+LCR.
 
-**Phase 2 (resume)**: PARTIAL. VM resumes, kernel runs, u-root init starts. Then crashes in `uart_start+0x118` — preempt count overflow in guest tty/uart layer.
+**Phase 2 (resume)**: PARTIAL. VM resumes, kernel runs, u-root init starts.
+Crashes in guest `uart_start+0x118` — Linux tty layer software state inconsistency.
+This is a fundamental kernel issue, not a hardware register gap.
 
-**Root cause of crash**: The guest Linux tty layer has kernel-internal software state (spinlocks, preempt counts, work queues) that is inconsistent after resume. `flush_to_ldisc` workqueue item was queued before save; after resume it runs with corrupted context. This is NOT a hardware register issue — IER/LCR are now saved/restored correctly in VMState (`SerialIER`, `SerialLCR`).
+**Paused here** — significant progress made. Resume from scratch on this item when ready.
 
-**What works**: memory, CPU registers (Regs+Sregs), serial IER/LCR — all saved and restored.
-**What fails**: guest tty kernel software state is inherently non-resumable mid-operation.
-
-**Possible mitigations**:
-1. Save only when guest is idle (not mid-tty-flush) — hard to detect
-2. Use `poweroff` inside the guest to flush/quiesce before saving
-3. Accept this limitation for now — save/restore works for simple workloads
-
-**VMState fields** (machine/state_amd64.go):
+**VMState** (machine/state_amd64.go):
 ```go
 type VMState struct {
     Mem       []byte
     Regs      []*kvm.Regs
     Sregs     []*kvm.Sregs
-    SerialIER byte   // restored via pendingSerialIER in SetupDevices
-    SerialLCR byte   // restored via pendingSerialLCR in SetupDevices
+    SerialIER byte
+    SerialLCR byte
 }
 ```
 
