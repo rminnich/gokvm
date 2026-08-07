@@ -65,6 +65,15 @@ expect { "booted" { puts "PASS: qemu"; exit 0 } timeout { puts "FAIL"; exit 1 } 
 go build ./... && GOARCH=arm64 go build ./... && GOARCH=riscv64 go build ./... && echo "all ok"
 ```
 
+**make net-test (iperf3 over virtio-net):**
+```
+make net-test
+```
+
+Requires `kernel.apparmor_restrict_unprivileged_userns=0` on the host
+(`sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`); otherwise
+the userns tap setup fails. See scripts/net-test.sh + scripts/net-test.expect.
+
 ## Kernels
 
 | Kernel | Version | Boot time | Notes |
@@ -170,6 +179,8 @@ tids tracked in `m.tids []int32`, set by `RunInfiniteLoop` after `LockOSThread`.
 
 **IRQ routing**: EBDA MP table now has Bus (ISA), IOAPIC, and 16 I/O interrupt source entries. Eliminates `BIOS bug, no explicit IRQ entries` kernel message. `nr_irqs` now 48 (was 24). Implemented in `ebda/ebda_amd64.go`.
 
+**Networking**: initrd uses u-root's default gosh shell (removed `-defaultsh bash`). gosh does not source `.bashrc`, so `make net-test` configures eth0 directly in the guest. virtio-net iperf3 results (kernel_cpu, tap): TCP guest RX ~1.1 Gbits/s, guest TX ~475 Mbits/s, UDP 0% loss.
+
 **Phase 1 (save)**: WORKING. `^A^Z` → saves synchronously → `os.Exit(0)`. ~1G gob file.
 Saves: guest RAM, CPU Regs+Sregs per vCPU, serial IER+LCR.
 
@@ -202,6 +213,7 @@ make build-arm64   # GOARCH=arm64 go build ./...
 make build-riscv64 # GOARCH=riscv64 go build ./...
 make build-otherarch # both
 make test-save-restore # save/restore test with kernel_cpu
+make net-test       # iperf3 over virtio-net tap (needs userns sysctl 0)
 ```
 
 ## Session State Checklist
@@ -221,5 +233,6 @@ make test-save-restore # save/restore test with kernel_cpu
 - [x] EBDA MP table — Bus/IOAPIC/IRQ entries; eliminates "BIOS bug" kernel message
 - [x] Exponential doubling for poison (~14x faster than loop copy)
 - [x] Lean cmdline — removed notsc/debug/dyndbg; ~2.7s boot (was minutes)
+- [x] net-test — iperf3 over virtio-net tap; gosh default shell; TX 475M/RX 1.1G
 - [ ] Save/restore via file — paused (tty software state crash on resume)
 - [ ] ppc64le/s390x stubs (trivial)
