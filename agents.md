@@ -146,11 +146,23 @@ tids tracked in `m.tids []int32`, set by `RunInfiniteLoop` after `LockOSThread`.
 | `machine/archstate_amd64.go` | AMD64State, captureArchState, GetAMD64State |
 | `machine/state_amd64.go` | Save(path)/Load(path) gob file I/O (paused — GetRegs deadlock) |
 
-## Save/Restore via File (paused)
+## Save/Restore Status
 
-`machine.Save(path)` calls `kvm.GetRegs(fd)` while vCPU goroutine holds the same fd in `kvm.Run` → deadlock.
-Fix needed: pause vCPUs before reading registers (ImmediateExit alone has a race).
-The new `AMD64State` capture (via `captureArchState` on stop) is the correct approach for resume state.
+**Phase 1 (save)**: WORKING. `^A^Z` → `serial.Start` saves synchronously → `os.Exit(0)`. ~1G gob file.
+
+**Phase 2 (resume)**: PARTIALLY WORKING. VM resumes, guest kernel runs, u-root init starts.
+Crash in guest: `uart_start+0x118` overflow — guest serial driver locking issue on resume.
+Root cause: guest's UART driver has internal state (IER, LCR, buffer locks) that conflicts
+with the freshly-reset emulated serial port after resume.
+
+**What works**: memory restored, registers restored, CPU runs, kernel executes, u-root starts.
+**What fails**: guest tty layer crashes flushing buffered serial data after resume.
+
+**Fix needed**: Either save/restore the serial port state (IER, LCR) in the gob file,
+or flush the guest's tty buffers before saving (e.g. send a sentinel to drain the serial).
+
+**`SetupDevices()`** added to `machine_amd64.go` — called by both `LoadLinux` and the resume path.
+This fixed the nil pointer panic that previously prevented resume from running at all.
 
 ## Makefile Targets
 
