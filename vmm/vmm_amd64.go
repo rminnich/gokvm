@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/bobuhiro11/gokvm/machine"
 	"github.com/bobuhiro11/gokvm/pvh"
@@ -97,15 +95,8 @@ func (v *amd64VMM) Boot() error {
 		return nil
 	}
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGHUP)
-	go func() {
-		for range sigs {
-			if err := save(); err != nil {
-				log.Printf("SIGHUP save: %v", err)
-			}
-		}
-	}()
+	// Save is triggered in-band via ^A^Z through the serial console.
+	// SIGHUP-based save is deferred to a future implementation.
 
 	trace := v.c.TraceCount > 0
 	if err := v.m.SingleStep(trace); err != nil {
@@ -139,6 +130,8 @@ func (v *amd64VMM) Boot() error {
 	g.Go(func() error {
 		err := v.m.GetSerial().Start(*in, restoreMode, v.m.InjectSerialIRQ, save)
 		log.Printf("Serial exits: %v", err)
+		// Stop all vCPUs so g.Wait() unblocks.
+		v.m.Close()
 		return err
 	})
 

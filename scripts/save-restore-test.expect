@@ -1,0 +1,70 @@
+#!/usr/bin/env expect
+# save-restore test for gokvm
+# Phase 1: boot, verify echo booted, save state via ^A^Z, exit via ^A^X
+# Phase 2: resume from state, verify echo booted again
+
+set timeout 30
+set statefile "/tmp/gokvm_test.state"
+
+file delete -force $statefile
+
+puts "=== Phase 1: boot and save ==="
+spawn ./gokvm boot -c 2 -i ./initrd -S $statefile
+expect {
+    "Setting console log level" {}
+    timeout { puts "FAIL: phase 1 boot timeout"; exit 1 }
+}
+sleep 3
+send "echo booted\r"
+expect {
+    "booted" { puts "PASS: phase 1 echo booted" }
+    timeout  { puts "FAIL: phase 1 echo booted timeout"; exit 1 }
+}
+
+# Trigger save via ^A then ^Z (sent separately so serial sees them as two bytes)
+send "\x01"
+sleep 0.2
+send "\x1a"
+
+# Poll until the state file exists and its size stabilises (save complete)
+set saved 0
+set prevsize -1
+for {set i 0} {$i < 60} {incr i} {
+    after 1000
+    if {[file exists $statefile]} {
+        set cursize [file size $statefile]
+        if {$cursize > 0 && $cursize == $prevsize} {
+            set saved 1
+            break
+        }
+        set prevsize $cursize
+    }
+}
+if {$saved == 0} {
+    puts "FAIL: state file not stable within 60s"
+    exit 1
+}
+puts "PASS: state file saved ([file size $statefile] bytes)"
+
+# Exit via ^A^X
+send "\x01x"
+expect {
+    "Serial exits" {}
+    eof           {}
+    timeout       {}
+}
+sleep 1
+
+puts "=== Phase 2: resume and verify ==="
+spawn ./gokvm boot -c 2 -i ./initrd -R $statefile
+expect {
+    "Setting console log level" {}
+    "Resumed from"             {}
+    timeout { puts "FAIL: phase 2 resume timeout"; exit 1 }
+}
+sleep 3
+send "echo booted\r"
+expect {
+    "booted" { puts "PASS: phase 2 echo booted after resume"; exit 0 }
+    timeout  { puts "FAIL: phase 2 echo booted timeout"; exit 1 }
+}

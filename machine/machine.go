@@ -77,6 +77,12 @@ func (m *Machine) Close() error {
 		r.ImmediateExit = 1
 	}
 
+	// Close all vCPU fds. This causes any blocked kvm.Run ioctl on those
+	// fds to return immediately with an error, unblocking the vCPU goroutines.
+	for _, fd := range m.vcpuFds {
+		syscall.Close(int(fd))
+	}
+
 	for _, d := range m.pci.Devices {
 		if c, ok := d.(io.Closer); ok {
 			c.Close()

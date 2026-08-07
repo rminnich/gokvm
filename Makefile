@@ -98,6 +98,10 @@ test: bzImage vmlinux vmlinux_PVH initrd vda.img CLOUDHV.fd
 build-arm64:
 	GOARCH=arm64 go build ./...
 
+.PHONY: test-save-restore
+test-save-restore: gokvm initrd
+	expect scripts/save-restore-test.expect
+
 .PHONY: clean
 clean:
 	rm -rf ./gokvm ./golangci-lint bzImage* vmlinux* CLOUDHV.fd _linux *_string.go
