@@ -64,6 +64,16 @@ run: initrd bzImage
 	$(MAKE) generate
 	go run . boot -c 2 -i "./initrd"
 
+kernel_cpu:
+	curl -s -O -L -C - --retry 5 \
+		https://github.com/u-root/cpu/raw/main/vm/kernel_linux_amd64
+	mv kernel_linux_amd64 kernel_cpu
+
+.PHONY: run-cpu
+run-cpu: initrd kernel_cpu
+	$(MAKE) generate
+	go run . boot -c 1 -k ./kernel_cpu -i "./initrd"
+
 .PHONY: runpvh
 runpvh: initrd vmlinux_PVH
 	$(MAKE) generate

@@ -31,3 +31,4 @@ CLOUDHV.fd
 _linux/
 *.swp
 *.state
+kernel_cpu
