@@ -30,3 +30,4 @@ CLOUDHV.fd
 # vendor/
 _linux/
 *.swp
+*.state

@@ -136,7 +136,6 @@ func (s *Serial) Start(in bufio.Reader, restoreMode func(), irqInject func() err
 			if !errors.Is(err, io.EOF) {
 				return err
 			}
-
 			break
 		}
 		s.GetInputChan() <- b
@@ -149,7 +148,7 @@ func (s *Serial) Start(in bufio.Reader, restoreMode func(), irqInject func() err
 
 		if before == 0x1 && b == 'x' {
 			restoreMode()
-			os.Exit(0)
+			break
 		}
 
 		if before == 0x1 && b == 0x1a {
@@ -157,7 +156,7 @@ func (s *Serial) Start(in bufio.Reader, restoreMode func(), irqInject func() err
 				log.Printf("save: %v", err)
 			}
 			restoreMode()
-			os.Exit(0)
+			break
 		}
 
 		before = b

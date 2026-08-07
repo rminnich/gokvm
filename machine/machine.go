@@ -86,7 +86,7 @@ func (m *Machine) Close() error {
 	for _, tid := range m.tids {
 		if tid != 0 {
 			// tgkill(tgid, tid, SIGUSR1) — interrupts the blocked kvm.Run ioctl.
-			syscall.Tgkill(pid, int(tid), syscall.SIGUSR1)
+			syscall.Tgkill(pid, int(tid), syscall.SIGHUP)
 		}
 	}
 
