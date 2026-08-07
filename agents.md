@@ -2,14 +2,14 @@
 
 ## Current Objective
 
-Multi-architecture support and clean VM lifecycle management via Runner interface.
+Multi-architecture support and clean VM lifecycle via Runner interface.
 
 ## Context
 
 - **Project**: gokvm
 - **Architecture**: amd64 primary; arm64 + riscv64 build-verified stubs
 - **Repo branch**: main
-- **HEAD commit**: `235d943` Makefile: add kernel_cpu target (u-root/cpu 6.0 kernel); run-cpu target uses -c 1
+- **HEAD commit**: `9ed286b` vmm: Info() returns *Save with Mem+VCPUs; vmm.Save/VCPUSave types; machine.Mem() accessor
 
 ## Coding Conventions
 
@@ -24,7 +24,7 @@ Multi-architecture support and clean VM lifecycle management via Runner interfac
 
 30s timeout (60s for kernel_cpu). KVM on this machine is flaky — retry up to 3 times.
 
-**make qemu (fastest):**
+**make qemu:**
 ```
 expect -c '
 set timeout 30
@@ -36,7 +36,7 @@ expect { "booted" { puts "PASS: make qemu"; exit 0 } timeout { puts "FAIL"; exit
 '
 ```
 
-**make run-cpu (preferred for gokvm testing):**
+**make run-cpu (preferred):**
 ```
 expect -c '
 set timeout 60
@@ -48,33 +48,19 @@ expect { "booted" { puts "PASS: run-cpu"; exit 0 } timeout { puts "FAIL"; exit 1
 '
 ```
 
-**make run (fallback, -c 2, slower):**
-```
-expect -c '
-set timeout 30
-spawn ./gokvm boot -c 2 -i ./initrd
-expect "Setting console log level"
-sleep 3
-send "echo booted\r"
-expect { "booted" { puts "PASS: make run"; exit 0 } timeout { puts "FAIL"; exit 1 } }
-'
-```
-
-**multi-arch build test:**
+**multi-arch build:**
 ```
 go build ./... && GOARCH=arm64 go build ./... && GOARCH=riscv64 go build ./... && echo "all ok"
 ```
 
 ## Kernels
 
-| Kernel | Version | Source | Boot time | Notes |
-|---|---|---|---|---|
-| `bzImage` | 5.14.3 | bobuhiro11/bins | ~minutes | Heavy lockdep; use with `-c 2` |
-| `kernel_cpu` | 6.0.0 | u-root/cpu repo | ~35s | Clean, NR_CPUS=1; use with `-c 1` |
+| Kernel | Version | Boot time | Notes |
+|---|---|---|---|
+| `bzImage` | 5.14.3 | ~minutes | Heavy lockdep; `-c 2` |
+| `kernel_cpu` | 6.0.0 | ~35s | Clean, NR_CPUS=1; `-c 1`; **preferred** |
 
-**Preferred**: `kernel_cpu` from https://github.com/u-root/cpu/raw/main/vm/kernel_linux_amd64
-- No lockdep testsuite, much cleaner boot
-- `make kernel_cpu` downloads it; `make run-cpu` boots with it
+`make kernel_cpu` downloads from https://github.com/u-root/cpu/raw/main/vm/kernel_linux_amd64
 
 ## Runner Interface (vmm/vmm.go)
 
@@ -84,98 +70,108 @@ type Runner interface {
     Setup() error   // load kernel/initrd into guest memory
     Boot() error    // start vCPUs + console I/O, blocks until exit
     Close() error   // stop VMM, interrupt blocked vCPU ioctls
-    Info() VMInfo   // return arch-defined info block
-}
-
-type VMInfo struct {
-    Arch         string
-    NCPUs        int
-    MemSize      int
-    KernelPath   string
-    CPUIDEntries []CPUIDEntry  // amd64 only
+    Info() *Save    // return Save struct after VM is stopped
 }
 ```
+
+## vmm.Save / vmm.VCPUSave (vmm/save.go)
+
+```go
+// VCPUSave holds per-vCPU register state for resume.
+type VCPUSave struct {
+    CPU  int
+    Regs interface{}  // *machine.AMD64State on amd64; nil otherwise
+}
+
+// Save holds everything needed to resume a stopped VMM.
+type Save struct {
+    Arch  string
+    Mem   []byte      // snapshot of guest RAM (copy)
+    VCPUs []VCPUSave  // one entry per vCPU
+}
+```
+
+`amd64VMM.Info()` — copies guest RAM via `machine.Mem()`, gets `*machine.AMD64State` per CPU via `machine.GetAMD64State()`.
+Stub arches return `&Save{Arch: runtime.GOARCH}`.
+
+## machine.AMD64State (machine/archstate_amd64.go)
+
+```go
+type AMD64State struct {
+    GPR    map[x86asm.Reg]uint64  // RAX..R15, RIP (x86asm constants)
+    RFLAGS uint64
+    Sregs  kvm.Sregs              // CR0,CR3,CR4,EFER,segments,etc.
+}
+```
+
+Captured automatically in `RunInfiniteLoop` when `ErrMachineStopped` is returned.
+Retrieved via `machine.GetAMD64State()` — nil until VM is stopped.
+
+## machine.Signal / machine.Close
+
+```go
+// Send any signal to all vCPU OS threads via tgkill.
+func (m *Machine) Signal(sig syscall.Signal)
+
+// Close sets stopped=1, ImmediateExit=1, then Signal(SIGHUP).
+// kvm.Run returns EINTR → nil → isStopped() → ErrMachineStopped.
+func (m *Machine) Close() error
+```
+
+tids tracked in `m.tids []int32`, set by `RunInfiniteLoop` after `LockOSThread`.
+
+## Exit Sequence (^A^X or ^A^Z)
+
+1. `serial.Start` breaks out of its loop (^A^X) or saves then breaks (^A^Z)
+2. Serial goroutine calls `v.Close()` → `machine.Close()`
+3. Sets `stopped=1`, `ImmediateExit=1`, `Signal(SIGHUP)` to each vCPU thread
+4. `kvm.Run` returns EINTR → `isStopped()` → `ErrMachineStopped`
+5. `RunInfiniteLoop` calls `captureArchState(cpu)` → stores `*AMD64State`
+6. All goroutines return → `g.Wait()` unblocks → process exits
 
 ## Architecture Files
 
 | File | Description |
 |---|---|
-| `vmm/vmm.go` | Runner interface, VMInfo, Config, VMM struct |
-| `vmm/vmm_amd64.go` | `amd64VMM` — full impl; `Info()` returns CPUID; `Close()` calls machine.Close() |
-| `vmm/vmm_arm64.go` | `arm64Runner` stub |
-| `vmm/vmm_riscv64.go` | `riscv64Runner` stub |
+| `vmm/vmm.go` | Runner interface, Config, VMM struct |
+| `vmm/save.go` | Save, VCPUSave types |
+| `vmm/vmm_amd64.go` | `amd64VMM` full impl |
+| `vmm/vmm_arm64.go` | arm64 stub |
+| `vmm/vmm_riscv64.go` | riscv64 stub |
+| `machine/archstate_amd64.go` | AMD64State, captureArchState, GetAMD64State |
+| `machine/state_amd64.go` | Save(path)/Load(path) gob file I/O (paused — GetRegs deadlock) |
 
-## machine.Close() — tgkill SIGHUP (WORKING)
+## Save/Restore via File (paused)
 
-`Machine.tids []int32` tracks each vCPU goroutine's OS thread ID.
-`RunInfiniteLoop` stores `syscall.Gettid()` after `LockOSThread`.
-`machine.Close()` sends `SIGHUP` to each tid via `syscall.Tgkill(pid, tid, syscall.SIGHUP)`.
-`kvm.Run()` returns `EINTR` → nil, then `isStopped()` → `ErrMachineStopped`.
-Serial goroutine breaks out of loop → calls `v.Close()` → chain above → clean exit. ✓
-
-## Exit Sequence
-
-1. User types `^A^X` or `^A^Z` (save+exit)
-2. `serial.Start` breaks out of its loop
-3. Serial goroutine calls `v.Close()`
-4. `amd64VMM.Close()` → `machine.Close()`
-5. Sets `stopped=1`, `ImmediateExit=1` on all RunData
-6. `tgkill(SIGHUP)` to each vCPU thread tid
-7. Each vCPU's `kvm.Run` returns EINTR → `isStopped()` → `ErrMachineStopped`
-8. All goroutines return → `g.Wait()` unblocks → process exits
+`machine.Save(path)` calls `kvm.GetRegs(fd)` while vCPU goroutine holds the same fd in `kvm.Run` → deadlock.
+Fix needed: pause vCPUs before reading registers (ImmediateExit alone has a race).
+The new `AMD64State` capture (via `captureArchState` on stop) is the correct approach for resume state.
 
 ## Makefile Targets
 
 ```
-make run           # ./gokvm boot -c 2 -i ./initrd (bzImage)
-make run-cpu       # ./gokvm boot -c 1 -k ./kernel_cpu -i ./initrd
-make qemu          # qemu-system-x86_64 with bzImage
+make run           # bzImage, -c 2
+make run-cpu       # kernel_cpu, -c 1
+make qemu          # qemu with bzImage
 make kernel_cpu    # download u-root/cpu kernel
 make build-arm64   # GOARCH=arm64 go build ./...
 make build-riscv64 # GOARCH=riscv64 go build ./...
 make build-otherarch # both
 ```
 
-## AMD64State (machine/archstate_amd64.go)
-
-Captured automatically when `RunInfiniteLoop` exits with `ErrMachineStopped`:
-
-```go
-type AMD64State struct {
-    GPR    map[x86asm.Reg]uint64  // RAX..R15, RIP via x86asm constants
-    RFLAGS uint64
-    Sregs  kvm.Sregs              // CR0,CR3,CR4,EFER,segments,etc.
-}
-
-// Retrieve after Close():
-state := machine.GetAMD64State()  // nil if not yet captured
-```
-
-First vCPU to stop wins. Stored atomically via `Machine.StoreArchState`/`LoadArchState` (unsafe.Pointer).
-
-
-
-- `^A^Z` triggers save but `kvm.GetRegs(fd)` deadlocks with running vCPU on same fd
-- `Save()` sets `stopped=1` + `ImmediateExit=1` before `GetRegs` — race still possible
-- Root fix needed: pause vCPUs before reading registers, or use KVM snapshot API
-- Low priority — multi-arch work takes precedence
-
 ## Session State Checklist
 
 - [x] Interface refactor
-- [x] Resumable state — ^A^Z save, -R resume (GetRegs deadlock paused)
-- [x] Boot test protocol — expect-based
-- [x] Serial input fix
-- [x] Boot time — `kunit.enable=0`; `kernel_cpu` preferred
-- [x] Architecture factoring — `_amd64.go` files; no build tags
 - [x] Runner interface — Init/Setup/Boot/Close/Info
-- [x] VMInfo struct — arch-neutral with CPUID on amd64
-- [x] Close() — tgkill SIGHUP to vCPU threads (WORKING)
-- [x] Machine.Signal(syscall.Signal) — send any signal to all vCPU threads
-- [x] AMD64State — x86asm.Reg GPR map + kvm.Sregs, captured on ErrMachineStopped
-- [x] arm64 stub — Close()/Info()
-- [x] riscv64 stub — Close()/Info()
-- [x] ^A^X / ^A^Z — serial breaks, calls Close(), clean exit
-- [x] kernel_cpu — Linux 6.0 from u-root/cpu; make run-cpu
-- [ ] Save/restore deadlock fix
-- [ ] ppc64le/s390x stubs (trivial, same pattern)
+- [x] vmm.Save / vmm.VCPUSave — per-vCPU register state container
+- [x] machine.AMD64State — x86asm.Reg GPR map + kvm.Sregs
+- [x] machine.Signal(syscall.Signal) — tgkill to all vCPU threads
+- [x] machine.Close() — uses Signal(SIGHUP); clean exit confirmed
+- [x] machine.Mem() — returns copy of guest RAM
+- [x] AMD64State captured on ErrMachineStopped in RunInfiniteLoop
+- [x] arm64/riscv64 stubs — Close()/Info()
+- [x] kernel_cpu (Linux 6.0) — make run-cpu
+- [x] ^A^X / ^A^Z — serial breaks, calls Close(), vCPUs exit
+- [ ] Save/restore via file — GetRegs deadlock (use AMD64State path instead)
+- [ ] ppc64le/s390x stubs (trivial)
+- [ ] Wire Info()/Save into resume path (replace gob Save/Load)
