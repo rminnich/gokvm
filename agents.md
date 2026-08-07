@@ -158,7 +158,17 @@ tids tracked in `m.tids []int32`, set by `RunInfiniteLoop` after `LockOSThread`.
 | `machine/archstate_amd64.go` | AMD64State, captureArchState, GetAMD64State |
 | `machine/state_amd64.go` | Save(path)/Load(path) gob file I/O (paused — GetRegs deadlock) |
 
-## Save/Restore Status — PAUSED (good stopping point)
+## Boot Performance
+
+| Configuration | Time |
+|---|---|
+| lkvm | ~2.0s |
+| gokvm (with poison) | ~2.7s |
+| gokvm -P (no poison) | ~2.4s |
+
+**`-P` flag** disables memory poisoning — use for performance testing. Poison uses exponential doubling (~330ms, mostly page faults on 1G RAM).
+
+**IRQ routing**: EBDA MP table now has Bus (ISA), IOAPIC, and 16 I/O interrupt source entries. Eliminates `BIOS bug, no explicit IRQ entries` kernel message. `nr_irqs` now 48 (was 24). Implemented in `ebda/ebda_amd64.go`.
 
 **Phase 1 (save)**: WORKING. `^A^Z` → saves synchronously → `os.Exit(0)`. ~1G gob file.
 Saves: guest RAM, CPU Regs+Sregs per vCPU, serial IER+LCR.
@@ -202,11 +212,14 @@ make test-save-restore # save/restore test with kernel_cpu
 - [x] machine.AMD64State — x86asm.Reg GPR map + kvm.Sregs
 - [x] machine.Signal(syscall.Signal) — tgkill to all vCPU threads
 - [x] machine.Close() — uses Signal(SIGHUP); clean exit confirmed
-- [x] machine.Mem() — returns copy of guest RAM
 - [x] AMD64State captured on ErrMachineStopped in RunInfiniteLoop
 - [x] arm64/riscv64 stubs — Close()/Info()
-- [x] kernel_cpu (Linux 6.0) — make run-cpu
+- [x] kernel_cpu (Linux 6.0) — make run-cpu / make lkvm
 - [x] ^A^X / ^A^Z — serial breaks, calls Close(), vCPUs exit
-- [ ] Save/restore via file — GetRegs deadlock (use AMD64State path instead)
+- [x] lkvm as preferred test tool — make lkvm
+- [x] -P flag — disable memory poison for faster boot (~2.4s vs ~2.7s)
+- [x] EBDA MP table — Bus/IOAPIC/IRQ entries; eliminates "BIOS bug" kernel message
+- [x] Exponential doubling for poison (~14x faster than loop copy)
+- [x] Lean cmdline — removed notsc/debug/dyndbg; ~2.7s boot (was minutes)
+- [ ] Save/restore via file — paused (tty software state crash on resume)
 - [ ] ppc64le/s390x stubs (trivial)
-- [ ] Wire Info()/Save into resume path (replace gob Save/Load)
