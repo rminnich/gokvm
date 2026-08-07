@@ -2,14 +2,14 @@
 
 ## Current Objective
 
-Fix clean VM exit when ^A^X is pressed, then get save/restore test working.
+Fix save/restore: `^A^Z` save blocks in `kvm.GetRegs` because vCPU goroutines hold the vcpu fds in `kvm.Run`.
 
 ## Context
 
 - **Project**: gokvm
 - **Architecture**: amd64 primary; arm64 build-time verified
 - **Repo branch**: main
-- **HEAD commit**: `22c8578` machine: close vcpu fds on Close() to unblock kvm.Run; serial exit calls Close()
+- **HEAD commit**: `2352c86` serial: ^AX exits via os.Exit; ^AZ saves synchronously then exits; save sets stopped+ImmediateExit before GetRegs
 
 ## Coding Conventions
 
@@ -17,7 +17,8 @@ Fix clean VM exit when ^A^X is pressed, then get save/restore test working.
 - Exception: map literals and struct slice literals may be wrapped freely
 - After each change: run `make run` and `make qemu` boot tests, then commit
 - Commit messages: concise, no fluff or praise
-- **Architecture-specific code**: use `runtime.GOARCH` checks at runtime where possible; else use `_GOARCH.go` file naming. No `//go:build` tags.
+- **Architecture-specific code**: `runtime.GOARCH` at runtime where possible; `_GOARCH.go` file naming otherwise. No `//go:build` tags.
+- **agents.md always in its own separate commit**
 
 ## Boot Test Protocol
 
@@ -38,7 +39,7 @@ expect {
 '
 ```
 
-**make run (./gokvm boot -c 2):**
+**make run:**
 ```
 expect -c '
 set timeout 30
@@ -53,78 +54,61 @@ expect {
 '
 ```
 
-**clean exit test:**
+**save/restore test:**
 ```
-expect -c '
-set timeout 30
-spawn ./gokvm boot -c 2 -i ./initrd
-expect "Setting console log level"
-sleep 3
-send "echo booted\r"
-expect "booted"
-send "\x01x"
-expect {
-    "All cpus done" { puts "PASS: clean exit"; exit 0 }
-    eof             { puts "PASS: clean exit (eof)"; exit 0 }
-    timeout         { puts "FAIL: did not exit"; exit 1 }
-}
-'
+expect scripts/save-restore-test.expect 2>/dev/null | grep -E 'PASS|FAIL|==='
 ```
 
-## Current Problem: ^A^X does not exit cleanly
+## Current Problem: Save blocks in kvm.GetRegs
 
-**Symptom**: after `^A^X`, serial goroutine exits and calls `m.Close()`, but `g.Wait()` in `vmm.Boot()` never returns because vCPU goroutines are stuck in `kvm.Run` ioctl.
+**Root cause**: `machine.Save()` calls `kvm.GetRegs(fd)` and `kvm.GetSregs(fd)` on vcpu fds. Those same fds are held by vCPU goroutines blocked in `kvm.Run` ioctl (via `LockOSThread`). Both are ioctls on the same fd — the kernel serializes them, so `GetRegs` blocks until `kvm.Run` returns.
 
-**What we know**:
-- `Close()` sets `m.stopped=1` and `ImmediateExit=1` on all RunData regions
-- `ImmediateExit=1` alone does not wake up the blocked `kvm.Run` ioctl
-- SIGHUP/SIGUSR1 sent to process/group doesn't work reliably due to Go signal delivery issues with LockOSThread goroutines
-- Closing the vcpu fds in `Close()` was tried (current code) — result unknown, disconnected before test completed
+**What was tried**:
+- Setting `ImmediateExit=1` on RunData regions — `kvm.Run` should return but there's a race: goroutine re-enters `kvm.Run` before `GetRegs` can run
+- Setting `stopped=1` + `ImmediateExit=1` — same race
+- Closing vcpu fds — causes `kvm.Run` to return with error but breaks subsequent ioctls
+- SIGHUP/SIGUSR1 to process group — signal delivery unreliable with LockOSThread goroutines
 
-**Current `Close()` in machine/machine.go:**
+**Evidence**: `Saving state to /tmp/...` log line appears (save started), but process never exits and no file is created within 90s. `kvm.GetRegs` is blocking.
+
+**Possible fixes to investigate**:
+1. Use `KVM_IMMEDIATE_EXIT` ioctl (separate from the RunData field) to force vCPU exit — but this IS `ImmediateExit` in RunData
+2. Use `tgkill(pid, tid, SIGURG)` to interrupt each specific OS thread — requires tracking tids of each vCPU goroutine at startup (store in Machine struct)
+3. Don't save registers at all — resume from RAM state only, re-init registers on resume
+4. Use KVM's `KVM_GET_VCPU_EVENTS` which may not block, then get registers after
+5. Save in a separate process that ptrace-stops the vCPU threads first
+
+**Simplest viable fix**: track each vCPU goroutine's OS thread ID (tid) via `syscall.Gettid()` at the start of `RunInfiniteLoop`, store them, then send `SIGURG` (which Go uses internally and handles safely) to each tid via `tgkill` to interrupt the `kvm.Run` syscall with `EINTR`.
+
+**`SIGURG` note**: Go's runtime uses SIGURG for goroutine preemption. Sending it to a specific thread tid should cause the `kvm.Run` ioctl to return `EINTR`, then `kvm.Run()` returns nil (EINTR is handled), then `isStopped()` returns true, goroutine exits loop.
+
+## Current serial.go exit logic
+
 ```go
-func (m *Machine) Close() error {
-    atomic.StoreUint32(&m.stopped, 1)
-    for _, r := range m.runs {
-        r.ImmediateExit = 1
+// ^A^X: restore tty and exit immediately
+if before == 0x1 && b == 'x' {
+    restoreMode()
+    os.Exit(0)          // clean exit, no deadlock
+}
+
+// ^A^Z: save synchronously then exit
+if before == 0x1 && b == 0x1a {
+    if err := save(); err != nil {  // BLOCKS on kvm.GetRegs
+        log.Printf("save: %v", err)
     }
-    // Close all vCPU fds to unblock kvm.Run
-    for _, fd := range m.vcpuFds {
-        syscall.Close(int(fd))
-    }
-    for _, d := range m.pci.Devices {
-        if c, ok := d.(io.Closer); ok {
-            c.Close()
-        }
-    }
-    return nil
+    restoreMode()
+    os.Exit(0)
 }
 ```
-
-**Next step**: test if closing vcpu fds works. If not, try closing vmFd or kvmFd. Also consider using `tgkill` to send signal to each specific OS thread tid.
-
-**Save/restore test** (`scripts/save-restore-test.expect`): deferred until exit is fixed. The test uses `^A^Z` to trigger save, polls for state file stability, exits via `^A^X`, then restarts with `-R`.
-
-## Architecture Refactor — What Was Done
-
-### Strategy
-- `runtime.GOARCH` check at runtime for functions that compile everywhere
-- `_amd64.go` file naming for code that cannot compile on non-amd64
-- No `//go:build` tags
-
-### vmm package — Runner interface
-- `vmm.go`: defines `Runner` interface (`Init`, `Setup`, `Boot`), `Config`, `VMM` struct
-- `vmm_amd64.go`: `amd64VMM` implements `Runner`; `Boot()` calls `m.Close()` when serial exits
-- `vmm_arm64.go`: `stubRunner` returns "not supported on this architecture"
 
 ## Key Findings
 
 - `make run` uses `-c 2`; `-c 4` causes workqueue lockups
 - `kunit.enable=0` in default kernel cmdline cuts boot time to ~6s
 - Serial input works via LSR polling; IER=0x5 when userspace opens `/dev/ttyS0`
-- Duplicate `SingleStep` race after `SetRawMode` was removed
-- SIGHUP-based save deferred — signal delivery unreliable with LockOSThread goroutines
-- Save via `^A^Z` (in-band serial) works when expect drives pty
+- `^A^X` now exits cleanly via `os.Exit(0)` in `serial.Start`
+- Host has Linux 7.0 kernel at `/home/rminnich/badgokvm/vmlinuz` (root-only, 17M) — may boot faster and more stably than the test 5.14.3 bzImage
+- gob encoding 1G takes ~640ms — fast enough, not the bottleneck
 
 ## Session State Checklist
 
@@ -134,5 +118,6 @@ func (m *Machine) Close() error {
 - [x] Serial input fix
 - [x] Boot time improvement — `kunit.enable=0`
 - [x] Architecture factoring — `_amd64.go`; `Runner` interface; arm64 build
-- [ ] Clean exit on ^A^X — IN PROGRESS (closing vcpu fds, result unknown)
-- [ ] Save/restore test — blocked on clean exit
+- [x] Clean exit on ^A^X — DONE via `os.Exit(0)` in serial.Start
+- [ ] Save/restore test — BLOCKED: kvm.GetRegs deadlocks with running vCPUs
+- [ ] Better kernel — Linux 7.0 available but root-only; investigate
