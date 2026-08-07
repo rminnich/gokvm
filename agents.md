@@ -148,21 +148,30 @@ tids tracked in `m.tids []int32`, set by `RunInfiniteLoop` after `LockOSThread`.
 
 ## Save/Restore Status
 
-**Phase 1 (save)**: WORKING. `^A^Z` → `serial.Start` saves synchronously → `os.Exit(0)`. ~1G gob file.
+**Phase 1 (save)**: WORKING. `^A^Z` → saves synchronously (ImmediateExit+GetRegs) → `os.Exit(0)`. ~1G gob file includes serial IER/LCR.
 
-**Phase 2 (resume)**: PARTIALLY WORKING. VM resumes, guest kernel runs, u-root init starts.
-Crash in guest: `uart_start+0x118` overflow — guest serial driver locking issue on resume.
-Root cause: guest's UART driver has internal state (IER, LCR, buffer locks) that conflicts
-with the freshly-reset emulated serial port after resume.
+**Phase 2 (resume)**: PARTIAL. VM resumes, kernel runs, u-root init starts. Then crashes in `uart_start+0x118` — preempt count overflow in guest tty/uart layer.
 
-**What works**: memory restored, registers restored, CPU runs, kernel executes, u-root starts.
-**What fails**: guest tty layer crashes flushing buffered serial data after resume.
+**Root cause of crash**: The guest Linux tty layer has kernel-internal software state (spinlocks, preempt counts, work queues) that is inconsistent after resume. `flush_to_ldisc` workqueue item was queued before save; after resume it runs with corrupted context. This is NOT a hardware register issue — IER/LCR are now saved/restored correctly in VMState (`SerialIER`, `SerialLCR`).
 
-**Fix needed**: Either save/restore the serial port state (IER, LCR) in the gob file,
-or flush the guest's tty buffers before saving (e.g. send a sentinel to drain the serial).
+**What works**: memory, CPU registers (Regs+Sregs), serial IER/LCR — all saved and restored.
+**What fails**: guest tty kernel software state is inherently non-resumable mid-operation.
 
-**`SetupDevices()`** added to `machine_amd64.go` — called by both `LoadLinux` and the resume path.
-This fixed the nil pointer panic that previously prevented resume from running at all.
+**Possible mitigations**:
+1. Save only when guest is idle (not mid-tty-flush) — hard to detect
+2. Use `poweroff` inside the guest to flush/quiesce before saving
+3. Accept this limitation for now — save/restore works for simple workloads
+
+**VMState fields** (machine/state_amd64.go):
+```go
+type VMState struct {
+    Mem       []byte
+    Regs      []*kvm.Regs
+    Sregs     []*kvm.Sregs
+    SerialIER byte   // restored via pendingSerialIER in SetupDevices
+    SerialLCR byte   // restored via pendingSerialLCR in SetupDevices
+}
+```
 
 ## Makefile Targets
 
