@@ -65,6 +65,9 @@ type Machine struct {
 	// tids holds the OS thread ID of each vCPU goroutine, set when
 	// RunInfiniteLoop locks its OS thread. Used by Close() to tgkill.
 	tids []int32
+	// archState holds arch-specific register state captured when the VM
+	// is stopped. Stored as unsafe.Pointer; use StoreArchState/LoadArchState.
+	archState unsafe.Pointer
 }
 
 // newPCI creates a new PCI bus with a bridge.
@@ -320,6 +323,18 @@ func (m *Machine) GetSerial() *serial.Serial {
 // KvmFd returns the KVM device file descriptor.
 func (m *Machine) KvmFd() uintptr {
 	return m.kvmFd
+}
+
+// StoreArchState stores arch-specific register state atomically.
+// Called from arch-specific code (e.g. machine_amd64.go) when the VM stops.
+func (m *Machine) StoreArchState(p unsafe.Pointer) {
+	atomic.StorePointer(&m.archState, p)
+}
+
+// LoadArchState loads the arch-specific register state pointer.
+// Returns nil if no state has been captured yet.
+func (m *Machine) LoadArchState() unsafe.Pointer {
+	return atomic.LoadPointer(&m.archState)
 }
 
 func (m *Machine) AddDevice(dev iodev.Device) {

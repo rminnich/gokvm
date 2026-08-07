@@ -359,6 +359,8 @@ func (m *Machine) SingleStep(onoff bool) error {
 
 // RunInfiniteLoop runs the guest cpu until there is an error.
 // If the error is ErrExitDebug, this function can be called again.
+// When the machine is stopped (via Close/Signal), it captures the vCPU
+// register state into an AMD64State before returning.
 func (m *Machine) RunInfiniteLoop(cpu int) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -378,6 +380,11 @@ func (m *Machine) RunInfiniteLoop(cpu int) error {
 		}
 
 		if err != nil {
+			// If we're stopping, capture register state for resume.
+			if errors.Is(err, ErrMachineStopped) {
+				m.captureArchState(cpu)
+			}
+
 			return err
 		}
 	}
