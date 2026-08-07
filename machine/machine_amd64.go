@@ -753,6 +753,14 @@ func (m *Machine) SetupDevices() error {
 		return err
 	}
 
+	// Restore serial state if loaded from a saved state file.
+	if m.pendingSerialIER != 0 || m.pendingSerialLCR != 0 {
+		m.serial.IER = m.pendingSerialIER
+		m.serial.LCR = m.pendingSerialLCR
+		m.pendingSerialIER = 0
+		m.pendingSerialLCR = 0
+	}
+
 	m.AddDevice(iodev.NewCMOS(0xC000_0000, 0x0))
 	m.AddDevice(&iodev.Noop{Port: 0x80, Psize: 0xA0})
 	m.initIOPortHandlers()

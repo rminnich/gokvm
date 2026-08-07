@@ -68,6 +68,10 @@ type Machine struct {
 	// archState holds arch-specific register state captured when the VM
 	// is stopped. Stored as unsafe.Pointer; use StoreArchState/LoadArchState.
 	archState unsafe.Pointer
+	// pendingSerialIER and pendingSerialLCR hold serial state loaded from
+	// a saved state file, applied by SetupDevices after serial is created.
+	pendingSerialIER byte
+	pendingSerialLCR byte
 }
 
 // newPCI creates a new PCI bus with a bridge.

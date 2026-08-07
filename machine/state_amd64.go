@@ -11,9 +11,11 @@ import (
 
 // VMState holds the serializable snapshot of a running VM.
 type VMState struct {
-	Mem   []byte
-	Regs  []*kvm.Regs
-	Sregs []*kvm.Sregs
+	Mem       []byte
+	Regs      []*kvm.Regs
+	Sregs     []*kvm.Sregs
+	SerialIER byte
+	SerialLCR byte
 }
 
 // Save snapshots guest RAM and all vCPU register state to path.
@@ -35,6 +37,11 @@ func (m *Machine) Save(path string) error {
 	}
 
 	copy(state.Mem, m.mem)
+
+	if m.serial != nil {
+		state.SerialIER = m.serial.IER
+		state.SerialLCR = m.serial.LCR
+	}
 
 	for i, fd := range m.vcpuFds {
 		r, err := kvm.GetRegs(fd)
@@ -94,6 +101,10 @@ func (m *Machine) Load(path string) error {
 			return fmt.Errorf("Load: SetSregs cpu %d: %w", i, err)
 		}
 	}
+
+	// Stash serial state for SetupDevices to apply after serial is created.
+	m.pendingSerialIER = state.SerialIER
+	m.pendingSerialLCR = state.SerialLCR
 
 	return nil
 }
