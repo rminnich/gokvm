@@ -72,8 +72,19 @@ func newPCI() *pci.PCI {
 	return pci.New(pci.NewBridge())
 }
 
+// Signal sends sig to all vCPU OS threads via tgkill, interrupting any
+// blocked kvm.Run ioctl with EINTR.
+func (m *Machine) Signal(sig syscall.Signal) {
+	pid := syscall.Getpid()
+	for _, tid := range m.tids {
+		if tid != 0 {
+			syscall.Tgkill(pid, int(tid), sig)
+		}
+	}
+}
+
 // Close stops vCPU goroutines and releases PCI device resources.
-// It sends SIGUSR1 to each vCPU thread (via tgkill) to interrupt any
+// It sends SIGHUP to each vCPU thread via tgkill to interrupt any
 // blocked kvm.Run ioctl with EINTR, causing RunOnce to check isStopped.
 func (m *Machine) Close() error {
 	atomic.StoreUint32(&m.stopped, 1)
@@ -82,13 +93,7 @@ func (m *Machine) Close() error {
 		r.ImmediateExit = 1
 	}
 
-	pid := syscall.Getpid()
-	for _, tid := range m.tids {
-		if tid != 0 {
-			// tgkill(tgid, tid, SIGUSR1) — interrupts the blocked kvm.Run ioctl.
-			syscall.Tgkill(pid, int(tid), syscall.SIGHUP)
-		}
-	}
+	m.Signal(syscall.SIGHUP)
 
 	for _, d := range m.pci.Devices {
 		if c, ok := d.(io.Closer); ok {
