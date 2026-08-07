@@ -86,14 +86,14 @@ type CPUIDEntry struct {
 | `vmm/vmm_arm64.go` | `arm64Runner` stub — all methods return "not supported" |
 | `vmm/vmm_riscv64.go` | `riscv64Runner` stub — all methods return "not supported" |
 
-## machine.Close() — tgkill approach
+## machine.Close() — tgkill approach (WORKING)
 
-`Machine` now tracks each vCPU goroutine's OS thread ID in `m.tids []int32`.
+`Machine` tracks each vCPU goroutine's OS thread ID in `m.tids []int32`.
 `RunInfiniteLoop` stores `syscall.Gettid()` into `m.tids[cpu]` after `LockOSThread`.
-`machine.Close()` sends `SIGUSR1` to each tid via `syscall.Tgkill(pid, tid, SIGUSR1)`.
-
-**Status**: implemented but not yet verified to reliably unblock `kvm.Run`.
-The `kvm.Run()` function already handles `EINTR` (returns nil), then `isStopped()` returns true → `ErrMachineStopped`.
+`machine.Close()` sends `SIGHUP` to each tid via `syscall.Tgkill(pid, tid, syscall.SIGHUP)`.
+`kvm.Run()` returns with `EINTR` (handled as nil), then `isStopped()` returns true → `ErrMachineStopped`.
+Serial goroutine breaks out of loop, calls `v.Close()`, which triggers the above chain.
+`g.Wait()` returns when all goroutines exit. Clean exit confirmed working.
 
 ## Known Issues / Next Steps
 
@@ -135,10 +135,10 @@ make build-otherarch # both arm64 and riscv64
 - [x] Architecture factoring — `_amd64.go` files; no build tags
 - [x] Runner interface — Init/Setup/Boot/Close/Info
 - [x] VMInfo struct — arch-neutral with CPUID on amd64
-- [x] Close() — tgkill SIGUSR1 to vCPU threads
+- [x] Close() — serial goroutine breaks out, calls v.Close() which tgkill SIGHUP to vCPU threads
 - [x] arm64 stub — Close()/Info()
 - [x] riscv64 stub — Close()/Info()
-- [x] ^A^X clean exit via os.Exit(0)
-- [ ] Save/restore deadlock fix (paused)
+- [x] ^A^X and ^A^Z — serial.Start breaks, serial goroutine calls Close(), vCPUs exit via SIGHUP EINTR
+- [ ] Save/restore deadlock fix (paused — kvm.GetRegs blocks with running vCPU on same fd)
 - [ ] ppc64le/s390x stubs
-- [ ] Verify tgkill actually unblocks kvm.Run reliably
+- [ ] Verify save/restore works end-to-end once GetRegs deadlock is resolved
