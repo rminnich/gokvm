@@ -30,6 +30,7 @@ type Config struct {
 	TraceCount int
 	Resume     string // path to state file for -R resume
 	SavePath   string // path to write state on save
+	NoPoison   bool   // skip memory poisoning for faster boot
 }
 
 // VMM wraps a Runner and a Config.

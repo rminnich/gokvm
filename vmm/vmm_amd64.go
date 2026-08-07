@@ -25,7 +25,7 @@ func New(c Config) *VMM {
 }
 
 func (v *amd64VMM) Init() error {
-	m, err := machine.New(v.c.Dev, v.c.NCPUs, v.c.MemSize)
+	m, err := machine.New(v.c.Dev, v.c.NCPUs, v.c.MemSize, v.c.NoPoison)
 	if err != nil {
 		return err
 	}

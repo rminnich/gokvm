@@ -22,6 +22,7 @@ type BootArgs struct {
 	TraceCount int
 	Resume     string
 	SavePath   string
+	NoPoison   bool
 }
 
 func parseBootArgs(args []string) (*BootArgs, error) {
@@ -53,6 +54,7 @@ func parseBootArgs(args []string) (*BootArgs, error) {
 
 	bootCmd.StringVar(&c.Resume, "R", "", "resume from state file")
 	bootCmd.StringVar(&c.SavePath, "S", "gokvm.state", "path to write state on save")
+	bootCmd.BoolVar(&c.NoPoison, "P", false, "disable memory poisoning (faster boot, less debug aid)")
 
 	var err error
 

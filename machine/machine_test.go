@@ -157,7 +157,7 @@ func testNewAndLoadLinux(t *testing.T, kernel, tap, guestIPv4, hostIPv4, prefixL
 		t.Skipf("Skipping test since we are not root")
 	}
 
-	m, err := machine.New("/dev/kvm", 1, 1<<29)
+	m, err := machine.New("/dev/kvm", 1, 1<<29, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestNewAndLoadEDK2PVH(t *testing.T) { // nolint:paralleltest
 		t.Skipf("Skipping test since we are not root")
 	}
 
-	m, err := machine.New("/dev/kvm", 1, 1<<30)
+	m, err := machine.New("/dev/kvm", 1, 1<<30, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestHalt(t *testing.T) {
 
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize, true)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -404,7 +404,7 @@ func TestReadWriteAt(t *testing.T) {
 
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize, true)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -450,7 +450,7 @@ func TestSingleStepOffOn(t *testing.T) {
 
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize, true)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -475,7 +475,7 @@ func TestSetupGetSetRegs(t *testing.T) {
 
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize, true)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -534,7 +534,7 @@ func TestSingleStep(t *testing.T) {
 
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize, true)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -619,7 +619,7 @@ func TestTranslate32(t *testing.T) {
 
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize, true)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -685,7 +685,7 @@ func TestCPUtoFD(t *testing.T) {
 
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize, true)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -706,7 +706,7 @@ func TestVtoP(t *testing.T) {
 
 	t.Parallel()
 
-	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize)
+	m, err := machine.New("/dev/kvm", 1, machine.MinMemSize, true)
 	if err != nil {
 		t.Fatalf("Open: got %v, want nil", err)
 	}
@@ -731,8 +731,8 @@ func TestVtoP(t *testing.T) {
 func TestMemTooSmall(t *testing.T) {
 	t.Parallel()
 
-	if _, err := machine.New("/dev/kvm", 1, 1<<16); !errors.Is(err, machine.ErrMemTooSmall) {
-		t.Fatalf(`machine.New("/dev/kvm", 1,  1<<16): got nil, want %v`, machine.ErrMemTooSmall)
+	if _, err := machine.New("/dev/kvm", 1, 1<<16, true); !errors.Is(err, machine.ErrMemTooSmall) {
+		t.Fatalf(`machine.New("/dev/kvm", 1,  1<<16, true): got nil, want %v`, machine.ErrMemTooSmall)
 	}
 }
 

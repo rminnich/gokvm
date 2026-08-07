@@ -28,6 +28,7 @@ func main() {
 			TraceCount: bootArgs.TraceCount,
 			Resume:     bootArgs.Resume,
 			SavePath:   bootArgs.SavePath,
+			NoPoison:   bootArgs.NoPoison,
 		}
 
 		vmm := vmm.New(*c)

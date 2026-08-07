@@ -26,6 +26,9 @@ const (
 	// see Table 4-3. Base MP Configuration Table Entry Types in Intel MP Configuration
 	// https://pdos.csail.mit.edu/6.828/2014/readings/ia32/MPspec.pdf
 	mpEntryTypeProcessor = 0
+	mpEntryTypeBus       = 1
+	mpEntryTypeIOAPIC    = 2
+	mpEntryTypeIOIntr    = 3
 
 	// see Table 4-4. Processor Entry Fields in Intel MP Configuration
 	// https://pdos.csail.mit.edu/6.828/2014/readings/ia32/MPspec.pdf
@@ -37,6 +40,17 @@ const (
 	cpuFeatureFPU  = uint32(0x001)
 
 	mpAPICVersion = uint8(0x14)
+
+	// IOAPIC address and ID
+	// refs: https://github.com/kvmtool/kvmtool/blob/0e1882a49f81cb15d328ef83a78849c0ea26eecc/x86/mptable.c
+	ioAPICAddr = 0xfec00000
+	ioAPICID   = 0
+
+	// ISA bus ID
+	isaBusID = 0
+
+	// Number of ISA IRQs to map
+	numISAIRQs = 16
 )
 
 var errorVCPUNumExceed = fmt.Errorf("the number of vCPUs must be less than or equal to %d", maxVCPUs)
@@ -47,9 +61,13 @@ type (
 		// padding
 		// It must be aligned with 16 bytes and its size must be less than 1KB.
 		// https://github.com/torvalds/linux/blob/2f111a6fd5b5297b4e92f53798ca086f7c7d33a4/arch/x86/kernel/mpparse.c#L597
-		_        [16 * 3]uint8
+		padding [16 * 3]uint8
+
 		mpfIntel mpfIntel
-		mpcTable mpcTable
+
+		// mpcTableBytes holds the serialised MP Configuration Table including
+		// CPU, bus, IOAPIC, and IRQ source entries. Variable length.
+		mpcTableBytes []byte
 	}
 
 	// Intel MP Floating Pointer Structure
@@ -60,16 +78,15 @@ type (
 		length        uint8
 		specification uint8
 		checkSum      uint8
-		_             uint8 // feature1
-		_             uint8 // feature2
-		_             uint8 // feature3
-		_             uint8 // feature4
-		_             uint8 // feature5
+		_ uint8 // feature1
+		_ uint8 // feature2
+		_ uint8 // feature3
+		_ uint8 // feature4
+		_ uint8 // feature5
 	}
 
-	// MP Configuration Table Header
-	// ported from https://github.com/torvalds/linux/blob/5bfc75d92/arch/x86/include/asm/mpspec_def.h#L37-L49
-	mpcTable struct {
+	// MP Configuration Table Header (fixed part only)
+	mpcTableHeader struct {
 		signature uint32
 		length    uint16
 		spec      uint8
@@ -79,19 +96,57 @@ type (
 		_         uint32 // oemPtr
 		_         uint16 // oemSize
 		oemCount  uint16
-		lapic     uint32 // Local APIC addresss must be set.
+		lapic     uint32
 		_         uint32 // reserved
+	}
 
-		mpcCPU [maxVCPUs]mpcCPU
+	mpcCPU struct {
+		typ         uint8
+		apicID      uint8
+		apicVer     uint8
+		cpuFlag     uint8
+		sig         uint32
+		featureFlag uint32
+		_           [2]uint32 // reserved
+	}
+
+	mpcBus struct {
+		typ   uint8
+		busID uint8
+		name  [6]uint8
+	}
+
+	mpcIOAPIC struct {
+		typ      uint8
+		apicID   uint8
+		apicVer  uint8
+		flags    uint8
+		apicAddr uint32
+	}
+
+	mpcIntsrc struct {
+		typ      uint8
+		irqType  uint8
+		irqFlag  uint16
+		srcBus   uint8
+		srcBusIRQ uint8
+		dstAPIC  uint8
+		dstIRQ   uint8
 	}
 )
 
 func (e *EBDA) Bytes() ([]byte, error) {
-	buf := new(bytes.Buffer)
+	var buf bytes.Buffer
 
-	if err := binary.Write(buf, binary.LittleEndian, e); err != nil {
-		return []byte{}, err
+	if err := binary.Write(&buf, binary.LittleEndian, e.padding); err != nil {
+		return nil, err
 	}
+
+	if err := binary.Write(&buf, binary.LittleEndian, e.mpfIntel); err != nil {
+		return nil, err
+	}
+
+	buf.Write(e.mpcTableBytes)
 
 	return buf.Bytes(), nil
 }
@@ -99,19 +154,19 @@ func (e *EBDA) Bytes() ([]byte, error) {
 func New(nCPUs int) (*EBDA, error) {
 	e := &EBDA{}
 
-	mpfIntel, err := newMPFIntel()
+	mpf, err := newMPFIntel()
 	if err != nil {
 		return e, err
 	}
 
-	e.mpfIntel = *mpfIntel
+	e.mpfIntel = *mpf
 
-	mpcTable, err := newMPCTable(nCPUs)
+	tableBytes, err := buildMPCTable(nCPUs)
 	if err != nil {
 		return e, err
 	}
 
-	e.mpcTable = *mpcTable
+	e.mpcTableBytes = tableBytes
 
 	return e, nil
 }
@@ -125,7 +180,7 @@ func newMPFIntel() (*mpfIntel, error) {
 
 	var err error
 
-	m.checkSum, err = m.calcCheckSum()
+	m.checkSum, err = calcCheckSum(m)
 	if err != nil {
 		return m, err
 	}
@@ -136,96 +191,128 @@ func newMPFIntel() (*mpfIntel, error) {
 	return m, nil
 }
 
-func (m *mpfIntel) calcCheckSum() (uint8, error) {
-	bytes, err := m.bytes()
-	if err != nil {
+func calcCheckSum(v interface{}) (uint8, error) {
+	var buf bytes.Buffer
+
+	if err := binary.Write(&buf, binary.LittleEndian, v); err != nil {
 		return 0, err
 	}
 
 	tmp := uint32(0)
-	for _, b := range bytes {
+	for _, b := range buf.Bytes() {
 		tmp += uint32(b)
 	}
 
 	return uint8(tmp & 0xff), nil
-}
-
-func (m *mpfIntel) bytes() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := binary.Write(buf, binary.LittleEndian, m); err != nil {
-		return []byte{}, err
-	}
-
-	return buf.Bytes(), nil
 }
 
 func apicAddr(apic uint32) uint32 {
 	return apicDefaultPhysBase + apic*apicBaseAddrStep
 }
 
-func newMPCTable(nCPUs int) (*mpcTable, error) {
-	m := &mpcTable{}
-	m.signature = mpcTableSignature
-	m.length = uint16(unsafe.Sizeof(mpcTable{})) // this field must contain the size of entries.
-	m.spec = 4
-	m.lapic = apicAddr(0)
-	m.OEMId = [8]byte{0x47, 0x4F, 0x4B, 0x56, 0x4D, 0x00, 0x00, 0x00} // "GOKVM   "
-	m.oemCount = maxVCPUs                                             // This must be the number of entries
-
+// buildMPCTable constructs the full MP Configuration Table as a byte slice,
+// including CPU, bus, IOAPIC, and I/O interrupt source entries.
+// Having explicit IRQ entries prevents the Linux kernel from printing
+// "BIOS bug, no explicit IRQ entries" and using a slow fallback path.
+func buildMPCTable(nCPUs int) ([]byte, error) {
 	if nCPUs > maxVCPUs {
 		return nil, errorVCPUNumExceed
 	}
 
-	var err error
+	// Build entry bytes first so we know the total length.
+	var entries bytes.Buffer
 
+	// CPU entries
 	for i := 0; i < nCPUs; i++ {
-		m.mpcCPU[i] = *newMPCCpu(i)
+		cpu := newMPCCpu(i)
+		if err := binary.Write(&entries, binary.LittleEndian, cpu); err != nil {
+			return nil, err
+		}
 	}
 
-	m.checkSum, err = m.calcCheckSum()
-	if err != nil {
-		return m, err
+	// Bus entry: ISA bus
+	bus := mpcBus{
+		typ:   mpEntryTypeBus,
+		busID: isaBusID,
+		name:  [6]uint8{'I', 'S', 'A', ' ', ' ', ' '},
+	}
+	if err := binary.Write(&entries, binary.LittleEndian, bus); err != nil {
+		return nil, err
 	}
 
-	m.checkSum ^= uint8(0xff)
-	m.checkSum++
-
-	return m, nil
-}
-
-func (m *mpcTable) calcCheckSum() (uint8, error) {
-	bytes, err := m.bytes()
-	if err != nil {
-		return 0, err
+	// IOAPIC entry
+	ioapic := mpcIOAPIC{
+		typ:      mpEntryTypeIOAPIC,
+		apicID:   ioAPICID,
+		apicVer:  mpAPICVersion,
+		flags:    1, // enabled
+		apicAddr: ioAPICAddr,
+	}
+	if err := binary.Write(&entries, binary.LittleEndian, ioapic); err != nil {
+		return nil, err
 	}
 
-	tmp := uint32(0)
-	for _, b := range bytes {
-		tmp += uint32(b)
+	// I/O interrupt source entries: one per ISA IRQ (0-15).
+	// Each ISA IRQ maps 1:1 to IOAPIC pin.
+	// refs: https://github.com/kvmtool/kvmtool/blob/0e1882a49f81cb15d328ef83a78849c0ea26eecc/x86/mptable.c
+	for irq := 0; irq < numISAIRQs; irq++ {
+		intsrc := mpcIntsrc{
+			typ:       mpEntryTypeIOIntr,
+			irqType:   0, // INT
+			irqFlag:   0, // default polarity and trigger
+			srcBus:    isaBusID,
+			srcBusIRQ: uint8(irq),
+			dstAPIC:   ioAPICID,
+			dstIRQ:    uint8(irq),
+		}
+		if err := binary.Write(&entries, binary.LittleEndian, intsrc); err != nil {
+			return nil, err
+		}
 	}
 
-	return uint8(tmp & 0xff), nil
-}
+	// Build the header with the correct total length.
+	headerSize := int(unsafe.Sizeof(mpcTableHeader{}))
+	totalLength := uint16(headerSize + entries.Len())
 
-func (m *mpcTable) bytes() ([]byte, error) {
-	buf := new(bytes.Buffer)
+	// oemCount = total number of entries
+	oemCount := uint16(nCPUs + 1 + 1 + numISAIRQs) // CPUs + bus + ioapic + irqs
 
-	if err := binary.Write(buf, binary.LittleEndian, m); err != nil {
-		return []byte{}, err
+	hdr := mpcTableHeader{
+		signature: mpcTableSignature,
+		length:    totalLength,
+		spec:      4,
+		lapic:     apicAddr(0),
+		OEMId:     [8]uint8{'G', 'O', 'K', 'V', 'M', ' ', ' ', ' '},
+		ProdID:    [12]uint8{},
+		oemCount:  oemCount,
 	}
 
-	return buf.Bytes(), nil
-}
+	// Compute checksum over header + entries with checkSum=0.
+	var full bytes.Buffer
 
-type mpcCPU struct {
-	typ         uint8
-	apicID      uint8 // Local APIC number
-	apicVer     uint8
-	cpuFlag     uint8
-	sig         uint32
-	featureFlag uint32
-	_           [2]uint32 // reserved
+	if err := binary.Write(&full, binary.LittleEndian, hdr); err != nil {
+		return nil, err
+	}
+
+	full.Write(entries.Bytes())
+
+	var sum uint8
+	for _, b := range full.Bytes() {
+		sum += b
+	}
+
+	hdr.checkSum = uint8(0x100 - int(sum))
+
+	// Re-serialise with correct checksum.
+	var out bytes.Buffer
+
+	if err := binary.Write(&out, binary.LittleEndian, hdr); err != nil {
+		return nil, err
+	}
+
+	out.Write(entries.Bytes())
+
+	return out.Bytes(), nil
 }
 
 func newMPCCpu(i int) *mpcCPU {

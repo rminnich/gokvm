@@ -93,7 +93,7 @@ const (
 )
 
 // New creates a new KVM machine for amd64.
-func New(kvmPath string, nCpus int, memSize int) (*Machine, error) {
+func New(kvmPath string, nCpus int, memSize int, noPoison bool) (*Machine, error) {
 	if memSize < MinMemSize {
 		return nil, fmt.Errorf("memory size %d:%w", memSize, ErrMemTooSmall)
 	}
@@ -133,10 +133,13 @@ func New(kvmPath string, nCpus int, memSize int) (*Machine, error) {
 
 	// Poison memory using exponential doubling — ~14x faster than byte-by-byte copy.
 	// Seed the first copy, then double the filled region each iteration.
-	region := m.mem[highMemBase:]
-	copy(region, Poison)
-	for i := len(Poison); i < len(region); i *= 2 {
-		copy(region[i:], region[:i])
+	// Skip if noPoison is set (-P flag) for faster boot at the cost of debug aid.
+	if !noPoison {
+		region := m.mem[highMemBase:]
+		copy(region, Poison)
+		for i := len(Poison); i < len(region); i *= 2 {
+			copy(region[i:], region[:i])
+		}
 	}
 
 	return m, nil
