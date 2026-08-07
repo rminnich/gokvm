@@ -325,6 +325,13 @@ func (m *Machine) KvmFd() uintptr {
 	return m.kvmFd
 }
 
+// Mem returns a copy of the guest RAM.
+func (m *Machine) Mem() ([]byte, error) {
+	snap := make([]byte, len(m.mem))
+	copy(snap, m.mem)
+	return snap, nil
+}
+
 // StoreArchState stores arch-specific register state atomically.
 // Called from arch-specific code (e.g. machine_amd64.go) when the VM stops.
 func (m *Machine) StoreArchState(p unsafe.Pointer) {

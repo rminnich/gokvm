@@ -7,7 +7,6 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/bobuhiro11/gokvm/kvm"
 	"github.com/bobuhiro11/gokvm/machine"
 	"github.com/bobuhiro11/gokvm/pvh"
 	"github.com/bobuhiro11/gokvm/term"
@@ -158,39 +157,31 @@ func (v *amd64VMM) Close() error {
 	return v.m.Close()
 }
 
-// Info returns architecture-defined information about this VMM.
-// On amd64 it includes the CPUID entries from KVM.
-func (v *amd64VMM) Info() VMInfo {
-	info := VMInfo{
-		Arch:       runtime.GOARCH,
-		NCPUs:      v.c.NCPUs,
-		MemSize:    v.c.MemSize,
-		KernelPath: v.c.Kernel,
-	}
-
+// Info returns a Save containing guest RAM and per-vCPU register state.
+// Returns nil if the VMM has not been stopped or state is unavailable.
+func (v *amd64VMM) Info() *Save {
 	if v.m == nil {
-		return info
+		return nil
 	}
 
-	// Populate CPUID entries from KVM.
-	cpuid := kvm.CPUID{
-		Nent:    100,
-		Entries: make([]kvm.CPUIDEntry2, 100),
+	save := &Save{
+		Arch: runtime.GOARCH,
 	}
 
-	if err := kvm.GetSupportedCPUID(v.m.KvmFd(), &cpuid); err == nil {
-		for i := 0; i < int(cpuid.Nent); i++ {
-			e := cpuid.Entries[i]
-			info.CPUIDEntries = append(info.CPUIDEntries, CPUIDEntry{
-				Function: e.Function,
-				Index:    e.Index,
-				Eax:      e.Eax,
-				Ebx:      e.Ebx,
-				Ecx:      e.Ecx,
-				Edx:      e.Edx,
-			})
-		}
+	// Snapshot guest RAM.
+	mem, err := v.m.Mem()
+	if err == nil {
+		save.Mem = mem
 	}
 
-	return info
+	// Collect per-vCPU arch state captured on stop.
+	for cpu := 0; cpu < v.c.NCPUs; cpu++ {
+		s := v.m.GetAMD64State()
+		save.VCPUs = append(save.VCPUs, VCPUSave{
+			CPU:  cpu,
+			Regs: s, // *machine.AMD64State or nil
+		})
+	}
+
+	return save
 }

@@ -12,7 +12,7 @@ func (s *riscv64Runner) Init() error  { return fmt.Errorf("not supported on risc
 func (s *riscv64Runner) Setup() error { return fmt.Errorf("not supported on riscv64") }
 func (s *riscv64Runner) Boot() error  { return fmt.Errorf("not supported on riscv64") }
 func (s *riscv64Runner) Close() error { return nil }
-func (s *riscv64Runner) Info() VMInfo { return VMInfo{Arch: runtime.GOARCH} }
+func (s *riscv64Runner) Info() *Save  { return &Save{Arch: runtime.GOARCH} }
 
 // New returns a *VMM backed by a stub that returns errors on all operations.
 func New(c Config) *VMM {
