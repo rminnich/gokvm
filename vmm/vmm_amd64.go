@@ -157,29 +157,23 @@ func (v *amd64VMM) Close() error {
 	return v.m.Close()
 }
 
-// Info returns a Save containing guest RAM and per-vCPU register state.
-// Returns nil if the VMM has not been stopped or state is unavailable.
+// Info returns a Save containing guest RAM (once, in Machine) and per-vCPU
+// register state captured when the VMM was stopped.
+// Returns nil if the VMM has not been initialised.
 func (v *amd64VMM) Info() *Save {
 	if v.m == nil {
 		return nil
 	}
 
 	save := &Save{
-		Arch: runtime.GOARCH,
+		Arch:    runtime.GOARCH,
+		Machine: v.m.NewSave(),
 	}
 
-	// Snapshot guest RAM.
-	mem, err := v.m.Mem()
-	if err == nil {
-		save.Mem = mem
-	}
-
-	// Collect per-vCPU arch state captured on stop.
 	for cpu := 0; cpu < v.c.NCPUs; cpu++ {
-		s := v.m.GetAMD64State()
 		save.VCPUs = append(save.VCPUs, VCPUSave{
 			CPU:  cpu,
-			Regs: s, // *machine.AMD64State or nil
+			Regs: v.m.GetAMD64State(), // *machine.AMD64State or nil
 		})
 	}
 
