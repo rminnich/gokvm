@@ -750,3 +750,79 @@ func TestTxWritesVnetHdr(t *testing.T) {
 		t.Fatalf("expected: %v, actual: %v", expected, b.Bytes())
 	}
 }
+
+// mockWritevTap is a tap that records the iovecs passed to
+// Writev, so the test can check that Tx gathers guest memory
+// without copying into a contiguous buffer.
+type mockWritevTap struct {
+	bytes.Buffer
+	iovs [][]byte
+}
+
+func (m *mockWritevTap) Writev(bufs [][]byte) (int, error) {
+	m.iovs = bufs
+
+	n := 0
+	for _, b := range bufs {
+		n += len(b)
+	}
+
+	return n, nil
+}
+
+func (m *mockWritevTap) Offload() bool {
+	return true
+}
+
+func (m *mockWritevTap) VnetHdr() bool {
+	return true
+}
+
+func TestTxUsesWritev(t *testing.T) {
+	t.Parallel()
+
+	expected := append(append([]byte{}, vnetHdr...), 0xaa, 0xbb)
+	chunk := []byte{0xcc, 0xdd, 0xee}
+
+	tap := &mockWritevTap{}
+	mem := make([]byte, 0x1000000)
+	v := virtio.NewNet(9, &mockInjector{}, tap, mem)
+
+	const K = 10
+
+	copy(mem[0x100:0x100+K+2], expected)
+	copy(mem[0x200:0x200+len(chunk)], chunk)
+
+	vq := virtio.VirtQueue{}
+	vq.DescTable[0].Addr = 0x100
+	vq.DescTable[0].Len = K + 2
+	vq.DescTable[0].Flags = 0x1
+	vq.DescTable[0].Next = 0x1
+
+	vq.DescTable[1].Addr = 0x200
+	vq.DescTable[1].Len = uint32(len(chunk))
+
+	vq.AvailRing.Idx = 1
+	v.VirtQueue[1] = &vq
+
+	if err := v.Tx(); err != nil {
+		t.Fatalf("Tx: %v", err)
+	}
+
+	if len(tap.iovs) != 2 {
+		t.Fatalf("Writev called with %d iovecs, want 2", len(tap.iovs))
+	}
+
+	if !bytes.Equal(tap.iovs[0], expected) {
+		t.Fatalf("iovs[0]: expected %v, actual %v", expected, tap.iovs[0])
+	}
+
+	if !bytes.Equal(tap.iovs[1], chunk) {
+		t.Fatalf("iovs[1]: expected %v, actual %v", chunk, tap.iovs[1])
+	}
+
+	// Iovecs must alias guest memory, not a copied buffer.
+	if &tap.iovs[0][0] != &mem[0x100] {
+		t.Fatal("Writev did not point directly into guest memory")
+	}
+}

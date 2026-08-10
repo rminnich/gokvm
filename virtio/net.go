@@ -82,6 +82,8 @@ type Net struct {
 	vnetHdr     bool // tap carries a 10-byte vnet hdr
 	offload     bool // tap performs GSO/checksum offload
 
+	txIovs [][]byte // reused TX iovecs pointing into guest memory
+
 	txKick    chan interface{}
 	done      chan struct{}
 	closeOnce sync.Once
@@ -369,27 +371,21 @@ func (v *Net) Tx() error {
 	old := LoadU16(&usedRing.Idx)
 
 	for v.LastAvailIdx[sel] != LoadU16(&availRing.Idx) {
-		v.txBuf = v.txBuf[:0]
 		descID := availRing.Ring[v.LastAvailIdx[sel]%QueueSize]
 
 		uidx := LoadU16(&usedRing.Idx)
 		usedRing.Ring[uidx%QueueSize].Idx = uint32(descID)
 		usedRing.Ring[uidx%QueueSize].Len = 0
 
+		// Build a writev iovec list pointing directly into
+		// guest memory: one iovec per descriptor, so the tap
+		// gathers the packet without a contiguous copy.
+		v.txIovs = v.txIovs[:0]
 		for {
 			desc := v.VirtQueue[sel].DescTable[descID]
 
-			l := int(desc.Len)
-			off := len(v.txBuf)
-
-			if off+l > cap(v.txBuf) {
-				grown := make([]byte, off+l, 2*(off+l))
-				copy(grown, v.txBuf)
-				v.txBuf = grown
-			}
-
-			v.txBuf = v.txBuf[:off+l]
-			copy(v.txBuf[off:], v.Mem[desc.Addr:desc.Addr+uint64(l)])
+			v.txIovs = append(v.txIovs,
+				v.Mem[desc.Addr:desc.Addr+uint64(desc.Len)])
 
 			usedRing.Ring[uidx%QueueSize].Len += desc.Len
 
@@ -404,20 +400,13 @@ func (v *Net) Tx() error {
 		// (same layout as struct virtio_net_hdr) and performs
 		// the segmentation, so write the whole buffer.
 		// Otherwise skip the hdr; the tun expects raw frames.
-		buf := v.txBuf
-		if !v.vnetHdr {
-			// refs https://github.com/torvalds/linux/blob/38f80f42/include/uapi/linux/virtio_net.h#L178-L191
-			buf = v.txBuf[10:]
-		}
-
-		if _, err := v.tap.Write(buf); err != nil {
+		if err := v.tapWrite(v.txIovs); err != nil {
 			return err
 		}
 
 		StoreAddU16(&usedRing.Idx, 1)
 		v.LastAvailIdx[sel]++
 	}
-
 	v.Hdr.commonHeader.isr = 0x1
 
 	if v.useEventIdx {
@@ -432,6 +421,49 @@ func (v *Net) Tx() error {
 	}
 
 	return v.IRQInjector.InjectVirtioNetIRQ()
+}
+
+// tapWrite delivers a TX packet to the tap. When the tap supports
+// writev and carries a vnet hdr, the iovecs already point straight
+// into guest memory and are written in one syscall, avoiding a
+// contiguous copy. Otherwise the packet is gathered into txBuf.
+func (v *Net) tapWrite(iovs [][]byte) error {
+	if v.vnetHdr {
+		if wv, ok := v.tap.(interface {
+			Writev([][]byte) (int, error)
+		}); ok {
+			if _, err := wv.Writev(iovs); err != nil {
+				return err
+			}
+
+			return nil
+		}
+	}
+
+	// fallback for taps without writev: gather into txBuf.
+	v.txBuf = v.txBuf[:0]
+	for _, b := range iovs {
+		off := len(v.txBuf)
+
+		if off+len(b) > cap(v.txBuf) {
+			grown := make([]byte, off+len(b), 2*(off+len(b)))
+			copy(grown, v.txBuf)
+			v.txBuf = grown
+		}
+
+		v.txBuf = v.txBuf[:off+len(b)]
+		copy(v.txBuf[off:], b)
+	}
+
+	buf := v.txBuf
+	if !v.vnetHdr {
+		// refs https://github.com/torvalds/linux/blob/38f80f42/include/uapi/linux/virtio_net.h#L178-L191
+		buf = v.txBuf[10:]
+	}
+
+	_, err := v.tap.Write(buf)
+
+	return err
 }
 
 func (v *Net) Write(port uint64, bytes []byte) error {

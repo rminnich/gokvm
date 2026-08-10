@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 const ifNameSize = 0x10
@@ -145,6 +147,20 @@ func (t *Tap) Close() error {
 func (t Tap) Write(buf []byte) (n int, err error) {
 	for {
 		n, err = syscall.Write(t.fd, buf)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+
+		return n, err
+	}
+}
+
+// Writev writes the buffers in a single syscall, so TX can point
+// iovecs directly at guest memory instead of copying the packet
+// into a contiguous buffer first.
+func (t Tap) Writev(bufs [][]byte) (n int, err error) {
+	for {
+		n, err = unix.Writev(t.fd, bufs)
 		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
