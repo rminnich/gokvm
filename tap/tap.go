@@ -71,11 +71,6 @@ func New(name string) (*Tap, error) {
 		return t, fmt.Errorf("TUN TUNSETIFF: %w", err)
 	}
 
-	// issue SIGIO if this tap interface receive packets
-	if _, err = fcntl(uintptr(t.fd), syscall.F_SETSIG, 0); err != nil {
-		return t, fmt.Errorf("tun SETSIG: %w", err)
-	}
-
 	var flags uintptr
 
 	// enable non-blocking IO for tap interface
@@ -83,12 +78,18 @@ func New(name string) (*Tap, error) {
 		return t, fmt.Errorf("TUN GETFL: %w", err)
 	}
 
-	flags |= syscall.O_NONBLOCK | syscall.O_ASYNC
+	flags |= syscall.O_NONBLOCK
 	if _, err = fcntl(uintptr(t.fd), syscall.F_SETFL, flags); err != nil {
-		return t, fmt.Errorf("TUN SETFL NONBLOCK|ASYNC: %w", err)
+		return t, fmt.Errorf("TUN SETFL NONBLOCK: %w", err)
 	}
 
 	return t, nil
+}
+
+// FD returns the underlying file descriptor, so callers can wait
+// for incoming packets with poll/epoll instead of SIGIO.
+func (t *Tap) FD() int {
+	return t.fd
 }
 
 func (t *Tap) Close() error {

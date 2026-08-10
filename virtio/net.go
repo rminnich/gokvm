@@ -6,14 +6,12 @@ import (
 	"errors"
 	"io"
 	"log"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/bobuhiro11/gokvm/pci"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -63,7 +61,6 @@ type Net struct {
 	useEventIdx bool
 
 	txKick    chan interface{}
-	rxKick    chan os.Signal
 	done      chan struct{}
 	closeOnce sync.Once
 
@@ -133,6 +130,17 @@ func (v *Net) Read(port uint64, bytes []byte) error {
 func (v *Net) RxThreadEntry() {
 	log.Println("virtio-net: RxThreadEntry started")
 
+	// Wait for incoming packets by polling the tap fd rather
+	// than SIGIO: at line rate SIGIO delivery is one signal per
+	// packet, which dominates host CPU. poll() has the same
+	// blocking semantics with none of the signal machinery.
+	fd := int32(-1)
+	if f, ok := v.tap.(interface{ FD() int }); ok {
+		fd = int32(f.FD())
+	}
+
+	var pfds [1]unix.PollFd
+
 	for {
 		select {
 		case <-v.done:
@@ -140,9 +148,22 @@ func (v *Net) RxThreadEntry() {
 				"received done signal")
 
 			return
-		case <-v.rxKick:
-			for v.RxDrain() == nil {
+		default:
+		}
+
+		if fd >= 0 {
+			pfds[0] = unix.PollFd{Fd: fd, Events: unix.POLLIN}
+			// 100ms timeout so v.done is honored promptly.
+			if _, err := unix.Poll(pfds[:], 100); err != nil ||
+				pfds[0].Revents&unix.POLLIN == 0 {
+				continue
 			}
+		} else {
+			// No pollable fd: fall back to a periodic drain.
+			time.Sleep(time.Millisecond)
+		}
+
+		for v.RxDrain() == nil {
 		}
 	}
 }
@@ -397,7 +418,7 @@ func (v *Net) Write(port uint64, bytes []byte) error {
 		switch queueIdx {
 		case 0:
 			// RX queue kick: silently drop.
-			// RX is driven by SIGIO signals.
+			// RX is driven by polling the tap fd.
 		case 1:
 			// TX queue kick: non-blocking send.
 			select {
@@ -427,7 +448,6 @@ func (v *Net) Size() uint64 {
 
 func (v *Net) Close() error {
 	log.Println("virtio-net: Close called")
-	signal.Stop(v.rxKick)
 
 	v.closeOnce.Do(func() { close(v.done) })
 
@@ -450,15 +470,12 @@ func NewNet(irq uint8, irqInjector IRQInjector, tap io.ReadWriter, mem []byte) *
 		irq:          irq,
 		IRQInjector:  irqInjector,
 		txKick:       make(chan interface{}, QueueSize),
-		rxKick:       make(chan os.Signal, 1),
 		done:         make(chan struct{}),
 		tap:          tap,
 		Mem:          mem,
 		VirtQueue:    [2]*VirtQueue{},
 		LastAvailIdx: [2]uint16{0, 0},
 	}
-
-	signal.Notify(res.rxKick, syscall.SIGIO)
 
 	return res
 }
