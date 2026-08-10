@@ -826,3 +826,125 @@ func TestTxUsesWritev(t *testing.T) {
 		t.Fatal("Writev did not point directly into guest memory")
 	}
 }
+
+// mockReadvTap is a tap whose Readv scatters the tap's pending
+// bytes into the provided iovecs (like the tun does), recording
+// the iovecs so the test can check that Rx scatters directly into
+// guest memory without an rxBuf copy.
+type mockReadvTap struct {
+	bytes.Buffer
+	iovs [][]byte
+}
+
+func (m *mockReadvTap) Readv(bufs [][]byte) (int, error) {
+	m.iovs = bufs
+
+	n := 0
+	for _, b := range bufs {
+		got, err := m.Buffer.Read(b)
+		n += got
+
+		if err != nil {
+			break
+		}
+	}
+
+	return n, nil
+}
+
+func (m *mockReadvTap) Offload() bool {
+	return true
+}
+
+func (m *mockReadvTap) VnetHdr() bool {
+	return true
+}
+
+func TestRxUsesReadv(t *testing.T) {
+	t.Parallel()
+
+	expected := append(append([]byte{}, vnetHdr...), 0xaa, 0xbb)
+
+	tap := &mockReadvTap{}
+	tap.Buffer = *bytes.NewBuffer(expected)
+
+	mem := make([]byte, 0x1000000)
+	v := virtio.NewNet(9, &mockInjector{}, tap, mem)
+
+	vq := virtio.VirtQueue{}
+	vq.AvailRing.Idx = 1
+	vq.DescTable[0].Addr = 0x100
+	vq.DescTable[0].Len = uint32(len(expected))
+	v.VirtQueue[0] = &vq
+
+	if err := v.RxDrain(); err != nil {
+		t.Fatalf("RxDrain: %v", err)
+	}
+
+	if len(tap.iovs) != 1 {
+		t.Fatalf("Readv called with %d iovecs, want 1", len(tap.iovs))
+	}
+
+	if !bytes.Equal(tap.iovs[0], expected) {
+		t.Fatalf("iovs[0]: expected %v, actual %v", expected, tap.iovs[0])
+	}
+
+	// Iovecs must alias guest memory, not a copied buffer.
+	if &tap.iovs[0][0] != &mem[0x100] {
+		t.Fatal("Readv did not point directly into guest memory")
+	}
+}
+
+func TestRxReadvScattersAcrossChain(t *testing.T) {
+	t.Parallel()
+
+	// Packet larger than the first descriptor must spill into
+	// the rest of the chain, exactly like a real tun scatter.
+	payload := make([]byte, 0x300)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+
+	expected := append(append([]byte{}, vnetHdr...), payload...)
+
+	tap := &mockReadvTap{}
+	tap.Buffer = *bytes.NewBuffer(expected)
+
+	mem := make([]byte, 0x1000000)
+	v := virtio.NewNet(9, &mockInjector{}, tap, mem)
+
+	vq := virtio.VirtQueue{}
+	vq.AvailRing.Idx = 1
+	vq.DescTable[0].Addr = 0x100
+	vq.DescTable[0].Len = 0x200
+	vq.DescTable[0].Flags = 0x1
+	vq.DescTable[0].Next = 0x1
+
+	vq.DescTable[1].Addr = 0x300
+	vq.DescTable[1].Len = 0x200
+
+	v.VirtQueue[0] = &vq
+
+	if err := v.RxDrain(); err != nil {
+		t.Fatalf("RxDrain: %v", err)
+	}
+
+	if len(tap.iovs) != 2 {
+		t.Fatalf("Readv called with %d iovecs, want 2", len(tap.iovs))
+	}
+
+	// Only the first n bytes of the chain hold packet data; the
+	// rest is untouched padding, exactly like a real tun read.
+	if !bytes.Equal(mem[0x100:0x300], expected[:0x200]) {
+		t.Fatalf("mem[0x100]: expected %v, actual %v", expected[:0x200], mem[0x100:0x300])
+	}
+
+	if !bytes.Equal(mem[0x300:0x300+len(expected)-0x200], expected[0x200:]) {
+		t.Fatalf("mem[0x300]: expected %v, actual %v", expected[0x200:], mem[0x300:0x300+len(expected)-0x200])
+	}
+
+	// Both iovecs must alias guest memory.
+	if &tap.iovs[0][0] != &mem[0x100] || &tap.iovs[1][0] != &mem[0x300] {
+		t.Fatal("Readv did not scatter into guest memory")
+	}
+}

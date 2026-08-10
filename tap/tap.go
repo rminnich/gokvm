@@ -179,3 +179,17 @@ func (t Tap) Read(buf []byte) (n int, err error) {
 		return n, err
 	}
 }
+
+// Readv reads a packet in a single syscall, scattering it into the
+// iovecs. For RX that lets the tun write directly into the guest's
+// descriptor chain instead of a contiguous host buffer first.
+func (t Tap) Readv(bufs [][]byte) (n int, err error) {
+	for {
+		n, err = unix.Readv(t.fd, bufs)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+
+		return n, err
+	}
+}

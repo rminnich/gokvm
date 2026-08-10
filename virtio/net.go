@@ -83,6 +83,7 @@ type Net struct {
 	offload     bool // tap performs GSO/checksum offload
 
 	txIovs [][]byte // reused TX iovecs pointing into guest memory
+	rxIovs [][]byte // reused RX iovecs pointing into guest memory
 
 	txKick    chan interface{}
 	done      chan struct{}
@@ -233,6 +234,73 @@ func (v *Net) RxDrain() error {
 }
 
 func (v *Net) Rx() error {
+	sel := 0
+
+	if v.VirtQueue[sel] == nil {
+		return ErrVQNotInit
+	}
+
+	availRing := &v.VirtQueue[sel].AvailRing
+	usedRing := &v.VirtQueue[sel].UsedRing
+
+	if v.LastAvailIdx[sel] == LoadU16(&availRing.Idx) {
+		return ErrNoRxBuf
+	}
+
+	uidx := LoadU16(&usedRing.Idx)
+
+	// Each avail entry is the head of a descriptor chain built
+	// by the driver. With GSO features negotiated the driver
+	// posts big receive buffers as chains of MAX_SKB_FRAGS+2
+	// descriptors, so walk the chain via the Next pointers the
+	// driver laid out rather than consuming one avail entry per
+	// descriptor. Consume exactly one avail entry and emit one
+	// used entry per packet.
+	headDescID := availRing.Ring[v.LastAvailIdx[sel]%QueueSize]
+
+	// readv fast path: scatter the packet directly into the
+	// guest's descriptor chain with one syscall, no host-side
+	// rxBuf copy. With vnet hdr the tun presents the 10-byte
+	// vnet hdr verbatim, exactly where the guest expects it.
+	if v.vnetHdr {
+		if rv, ok := v.tap.(interface {
+			Readv([][]byte) (int, error)
+		}); ok {
+			v.rxIovs = v.rxIovs[:0]
+
+			descID := headDescID
+			for {
+				desc := &v.VirtQueue[sel].DescTable[descID]
+
+				v.rxIovs = append(v.rxIovs,
+					v.Mem[desc.Addr:desc.Addr+uint64(desc.Len)])
+
+				if desc.Flags&0x1 != 0 {
+					descID = desc.Next
+				} else {
+					break
+				}
+			}
+
+			n, err := rv.Readv(v.rxIovs)
+			if err != nil {
+				return ErrNoRxPacket
+			}
+
+			usedRing.Ring[uidx%QueueSize].Idx = uint32(headDescID)
+			usedRing.Ring[uidx%QueueSize].Len = uint32(n)
+
+			v.LastAvailIdx[sel]++
+			StoreAddU16(&usedRing.Idx, 1)
+
+			v.Hdr.commonHeader.isr = 0x1
+
+			return nil
+		}
+	}
+
+	// fallback: read the packet into rxBuf, then copy it into
+	// the chain. Used by taps without readv (unit tests).
 	if v.rxBuf == nil {
 		v.rxBuf = make([]byte, 10+65536)
 	}
@@ -264,29 +332,6 @@ func (v *Net) Rx() error {
 		clear(packet[:10])
 	}
 
-	sel := 0
-
-	if v.VirtQueue[sel] == nil {
-		return ErrVQNotInit
-	}
-
-	availRing := &v.VirtQueue[sel].AvailRing
-	usedRing := &v.VirtQueue[sel].UsedRing
-
-	if v.LastAvailIdx[sel] == LoadU16(&availRing.Idx) {
-		return ErrNoRxBuf
-	}
-
-	uidx := LoadU16(&usedRing.Idx)
-
-	// Each avail entry is the head of a descriptor chain built
-	// by the driver. With GSO features negotiated the driver
-	// posts big receive buffers as chains of MAX_SKB_FRAGS+2
-	// descriptors, so walk the chain via the Next pointers the
-	// driver laid out rather than consuming one avail entry per
-	// descriptor. Consume exactly one avail entry and emit one
-	// used entry per packet.
-	headDescID := availRing.Ring[v.LastAvailIdx[sel]%QueueSize]
 	usedRing.Ring[uidx%QueueSize].Idx = uint32(headDescID)
 	usedRing.Ring[uidx%QueueSize].Len = 0
 
