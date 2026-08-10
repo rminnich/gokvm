@@ -181,13 +181,19 @@ tids tracked in `m.tids []int32`, set by `RunInfiniteLoop` after `LockOSThread`.
 
 **Networking**: initrd uses u-root's default gosh shell (removed `-defaultsh bash`). gosh does not source `.bashrc`, so `make net-test` configures eth0 directly in the guest. virtio-net iperf3 results (kernel_cpu, tap, single stream):
 
-| Test | gokvm baseline | gokvm optimized | lkvm |
+| Test | gokvm pre-GSO | gokvm GSO | lkvm |
 |---|---|---|---|
-| TCP guest RX (host→guest) | ~1.0 Gbits/s | ~5.4–6.7 Gbits/s | ~27 Gbits/s |
-| TCP guest TX (guest→host) | ~540 Mbits/s | ~3.8–4.3 Gbits/s | ~22 Gbits/s |
+| TCP guest RX (host→guest) | ~5.4–6.7 Gbits/s | ~23.5 Gbits/s | ~26.6 Gbits/s |
+| TCP guest TX (guest→host) | ~3.8–4.3 Gbits/s | ~16.8 Gbits/s | ~22.0 Gbits/s |
 | UDP jitter / loss | 0ms / 0% | 0ms / 0% | 0ms / 0% |
 
-Optimizations (commits f06b448, 175c242): QueueSize 32→256 (vring_size(256,4096)=10246 bytes), RX drains the tap and injects one IRQ per batch with a reused buffer, TX accumulates descriptor chains into one reused buffer, and VIRTIO_RING_F_EVENT_IDX is advertised and honored (used_event suppresses IRQs, avail_event written back so the guest keeps kicking). Remaining gap to lkvm is the modern virtio-pci MMIO + MSI-X interface. Compare via `make net-test` (gokvm) and `make net-test-lkvm`.
+Perf work (commits f06b448, 175c242, 778587b): QueueSize 32→256 (vring_size(256,4096)=10246 bytes), RX drains the tap and injects one IRQ per batch with a reused buffer, TX accumulates descriptor chains into one reused buffer, VIRTIO_RING_F_EVENT_IDX advertised and honored (used_event suppresses IRQs, avail_event written back so the guest keeps kicking), and tap GSO offload (TUNSETOFFLOAD + IFF_VNET_HDR): tap does the segmentation, virtio-net advertises the GSO feature set, vnet hdr forwarded verbatim on RX and written whole on TX.
+
+Two bugs fixed in 778587b:
+- Feature bits were one bit too high (set advertised VIRTIO_NET_F_MAC=5 instead of GSO=6); guest read zeroed config MAC → EADDRNOTAVAIL on link up. Values now match include/uapi/linux/virtio_net.h.
+- Rx() consumed one avail entry per descriptor; with GSO the guest posts big RX buffers as chains of MAX_SKB_FRAGS+2 descriptors. Rx() now follows the driver's Next pointers, one avail+used entry per packet.
+
+Remaining gap to lkvm is the modern virtio-pci MMIO + MSI-X interface. Compare via `make net-test` (gokvm) and `make net-test-lkvm`.
 
 **Phase 1 (save)**: WORKING. `^A^Z` → saves synchronously → `os.Exit(0)`. ~1G gob file.
 Saves: guest RAM, CPU Regs+Sregs per vCPU, serial IER+LCR.
