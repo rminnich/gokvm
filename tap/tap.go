@@ -9,8 +9,26 @@ import (
 
 const ifNameSize = 0x10
 
+const (
+	iffVnetHdr = 0x4000 // IFF_VNET_HDR: 10-byte vnet hdr on every read/write
+)
+
+const (
+	// TUNSETOFFLOAD feature flags for tap GSO offload.
+	tunFCsum   = 0x01 // checksum offload
+	tunFTSO4   = 0x02 // TCP segmentation offload IPv4
+	tunFTSO6   = 0x04 // TCP segmentation offload IPv6
+	tunFTSOECN = 0x08 // TCP ECN offload
+)
+
+// TUNSETOFFLOAD: _IOW('T', 208, unsigned int).
+// syscall pkg lacks it; x/sys/unix has it but not the TUN_F_ flags.
+const tunSetOffload = 0x400454d0
+
 type Tap struct {
-	fd int
+	fd      int
+	vnetHdr bool // IFF_VNET_HDR applied: reads/writes carry a vnet hdr
+	offload bool // TUNSETOFFLOAD accepted: tun performs GSO/checksum
 }
 
 type ifReq struct {
@@ -62,13 +80,29 @@ func New(name string) (*Tap, error) {
 
 	ifr := ifReq{
 		Name:  [ifNameSize]byte{},
-		Flags: syscall.IFF_TAP | syscall.IFF_NO_PI,
+		Flags: syscall.IFF_TAP | syscall.IFF_NO_PI | iffVnetHdr,
 	}
 	copy(ifr.Name[:ifNameSize-1], name)
 
 	ifrPtr := uintptr(unsafe.Pointer(&ifr))
 	if _, err = ioctl(uintptr(t.fd), syscall.TUNSETIFF, ifrPtr); err != nil {
 		return t, fmt.Errorf("TUN TUNSETIFF: %w", err)
+	}
+
+	// IFF_VNET_HDR requested above is honored by the kernel on
+	// attach, so every read/write now carries a 10-byte vnet hdr.
+	t.vnetHdr = true
+
+	// Enable GSO/checksum offload so the tun can segment. Best
+	// effort: on kernels without vnet hdr support TUNSETIFF above
+	// would already have failed, so a failure here just means no
+	// offload; Offload() reports it so the virtio-net device only
+	// advertises GSO features when the tun can honor them.
+	if _, err = ioctl(uintptr(t.fd), tunSetOffload,
+		tunFCsum|tunFTSO4|tunFTSO6|tunFTSOECN); err != nil {
+		t.offload = false
+	} else {
+		t.offload = true
 	}
 
 	var flags uintptr
@@ -90,6 +124,18 @@ func New(name string) (*Tap, error) {
 // for incoming packets with poll/epoll instead of SIGIO.
 func (t *Tap) FD() int {
 	return t.fd
+}
+
+// Offload reports whether the tun accepted TUNSETOFFLOAD and
+// therefore performs GSO/checksum offload.
+func (t *Tap) Offload() bool {
+	return t.offload
+}
+
+// VnetHdr reports whether IFF_VNET_HDR was applied, meaning every
+// read/write carries a 10-byte vnet hdr.
+func (t *Tap) VnetHdr() bool {
+	return t.vnetHdr
 }
 
 func (t *Tap) Close() error {

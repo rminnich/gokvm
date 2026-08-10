@@ -2,6 +2,7 @@ package virtio_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"sync"
 	"testing"
@@ -619,5 +620,133 @@ func TestRx(t *testing.T) {
 	actual := mem[0x100+K : 0x100+K+2]
 	if !bytes.Equal(expected, actual) {
 		t.Fatalf("expected: %v, actual: %v", expected, actual)
+	}
+}
+
+// mockOffloadTap is a bytes.Buffer tap that reports
+// TUNSETOFFLOAD support and IFF_VNET_HDR (10-byte vnet hdr on
+// every read/write).
+type mockOffloadTap struct {
+	bytes.Buffer
+	offload bool
+	vnetHdr bool
+}
+
+func (m *mockOffloadTap) Offload() bool {
+	return m.offload
+}
+
+func (m *mockOffloadTap) VnetHdr() bool {
+	return m.vnetHdr
+}
+
+// gsoFeatures is the virtio_net feature set advertised when the
+// tap negotiates TUNSETOFFLOAD (see virtioNetGSO in net.go).
+// Bits per include/uapi/linux/virtio_net.h: CSUM=0, GUEST_CSUM=1,
+// GUEST_TSO4=7, GUEST_TSO6=8, GUEST_ECN=9, HOST_TSO4=11,
+// HOST_TSO6=12, HOST_ECN=13.
+const gsoFeatures = 0x1 | 0x2 | 0x80 | 0x100 | 0x200 | 0x800 | 0x1000 | 0x2000
+
+// vnetHdr is a 10-byte virtio_net_hdr (non-zero so verbatim
+// forwarding is distinguishable from a zeroed header): GSO type
+// TCPv4, gso_size 1448.
+var vnetHdr = []byte{0x00, 0x01, 0x00, 0x00, 0xa8, 0x05, 0x00, 0x00, 0x00, 0x00}
+
+func TestNetAdvertisesGSOFeatures(t *testing.T) {
+	t.Parallel()
+
+	off := &mockOffloadTap{offload: true, vnetHdr: true}
+	noOffload := &mockOffloadTap{vnetHdr: true}
+	plain := bytes.NewBuffer([]byte{})
+
+	vOff := virtio.NewNet(9, &mockInjector{}, off, []byte{})
+	vNoOffload := virtio.NewNet(9, &mockInjector{}, noOffload, []byte{})
+	vPlain := virtio.NewNet(9, &mockInjector{}, plain, []byte{})
+
+	buf := make([]byte, 4)
+	_ = vOff.Read(virtio.NetIOPortStart, buf)
+	gsoHostFeatures := binary.LittleEndian.Uint32(buf)
+	_ = vNoOffload.Read(virtio.NetIOPortStart, buf)
+	noOffloadFeatures := binary.LittleEndian.Uint32(buf)
+	_ = vPlain.Read(virtio.NetIOPortStart, buf)
+	plainHostFeatures := binary.LittleEndian.Uint32(buf)
+
+	if gsoHostFeatures&gsoFeatures != gsoFeatures {
+		t.Fatalf(
+			"offload tap: GSO features not advertised: %#x",
+			gsoHostFeatures,
+		)
+	}
+
+	if noOffloadFeatures&gsoFeatures != 0 {
+		t.Fatalf(
+			"vnet-hdr-only tap: GSO features advertised: %#x",
+			noOffloadFeatures,
+		)
+	}
+
+	if plainHostFeatures&gsoFeatures != 0 {
+		t.Fatalf(
+			"plain tap: GSO features advertised: %#x",
+			plainHostFeatures,
+		)
+	}
+}
+
+func TestRxForwardsVnetHdr(t *testing.T) {
+	t.Parallel()
+
+	seed := append(append([]byte{}, vnetHdr...), 0xaa, 0xbb)
+
+	mem := make([]byte, 0x1000000)
+	v := virtio.NewNet(
+		9, &mockInjector{},
+		&mockOffloadTap{
+			Buffer:  *bytes.NewBuffer(seed),
+			offload: true,
+			vnetHdr: true,
+		}, mem,
+	)
+
+	vq := virtio.VirtQueue{}
+	vq.AvailRing.Idx = 1
+	vq.DescTable[0].Addr = 0x100
+	vq.DescTable[0].Len = 0x200
+	v.VirtQueue[0] = &vq
+
+	if err := v.RxDrain(); err != nil {
+		t.Fatalf("RxDrain: %v", err)
+	}
+
+	actual := mem[0x100 : 0x100+len(seed)]
+	if !bytes.Equal(seed, actual) {
+		t.Fatalf("expected: %v, actual: %v", seed, actual)
+	}
+}
+
+func TestTxWritesVnetHdr(t *testing.T) {
+	t.Parallel()
+
+	expected := append(append([]byte{}, vnetHdr...), 0xaa, 0xbb)
+
+	b := &mockOffloadTap{offload: true, vnetHdr: true}
+	mem := make([]byte, 0x1000000)
+	v := virtio.NewNet(9, &mockInjector{}, b, mem)
+
+	const K = 10
+	copy(mem[0x100:0x100+K+2], expected)
+
+	vq := virtio.VirtQueue{}
+	vq.DescTable[0].Addr = 0x100
+	vq.DescTable[0].Len = K + 2
+	vq.AvailRing.Idx = 1
+	v.VirtQueue[1] = &vq
+
+	if err := v.Tx(); err != nil {
+		t.Fatalf("Tx: %v", err)
+	}
+
+	if !bytes.Equal(expected, b.Bytes()) {
+		t.Fatalf("expected: %v, actual: %v", expected, b.Bytes())
 	}
 }

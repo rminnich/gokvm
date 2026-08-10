@@ -30,7 +30,27 @@ const (
 	// using used_event/avail_event indices.
 	// refs https://docs.oasis-open.org/virtio/virtio/v1.1/cs01/virtio-v1.1-cs01.html#x1-280005
 	virtioRingFEventIdx = 1 << 29
+
+	// virtio_net feature bits for GSO/checksum offload, per
+	// include/uapi/linux/virtio_net.h: MAC=5, GSO=6, GUEST_TSO4=7,
+	// GUEST_TSO6=8, GUEST_ECN=9, HOST_TSO4=11, HOST_TSO6=12,
+	// HOST_ECN=13. The tun (TUNSETOFFLOAD) does the segmentation,
+	// so the device advertises both host and guest offload.
+	virtioNetFCSUM      = 1 << 0
+	virtioNetFGuestCSUM = 1 << 1
+	virtioNetFGuestTSO4 = 1 << 7
+	virtioNetFGuestTSO6 = 1 << 8
+	virtioNetFGuestECN  = 1 << 9
+	virtioNetFHostTSO4  = 1 << 11
+	virtioNetFHostTSO6  = 1 << 12
+	virtioNetFHostECN   = 1 << 13
 )
+
+// virtioNetGSO is the feature set advertised when the tap
+// negotiated TUNSETOFFLOAD and carries a 10-byte vnet hdr.
+const virtioNetGSO = virtioNetFCSUM | virtioNetFGuestCSUM |
+	virtioNetFGuestTSO4 | virtioNetFGuestTSO6 | virtioNetFGuestECN |
+	virtioNetFHostTSO4 | virtioNetFHostTSO6 | virtioNetFHostECN
 
 // vringNeedEvent returns true when the ring index advancing
 // from old to new requires a notification, given the peer's
@@ -59,6 +79,8 @@ type Net struct {
 	txBuf []byte // reused TX accumulation buffer
 
 	useEventIdx bool
+	vnetHdr     bool // tap carries a 10-byte vnet hdr
+	offload     bool // tap performs GSO/checksum offload
 
 	txKick    chan interface{}
 	done      chan struct{}
@@ -213,18 +235,32 @@ func (v *Net) Rx() error {
 		v.rxBuf = make([]byte, 10+65536)
 	}
 
-	// read raw packet from tap device
-	n, err := v.tap.Read(v.rxBuf[10:])
-	if err != nil {
-		return ErrNoRxPacket
+	// read packet from tap device. With vnet hdr the tun
+	// presents a 10-byte vnet hdr (same layout as struct
+	// virtio_net_hdr) that we forward verbatim so the guest
+	// can reassemble GSO superpackets.
+	var packet []byte
+
+	if v.vnetHdr {
+		n, err := v.tap.Read(v.rxBuf[:])
+		if err != nil {
+			return ErrNoRxPacket
+		}
+
+		packet = v.rxBuf[:n]
+	} else {
+		n, err := v.tap.Read(v.rxBuf[10:])
+		if err != nil {
+			return ErrNoRxPacket
+		}
+
+		packet = v.rxBuf[:10+n]
+
+		// struct virtio_net_hdr: all zero. No offload is
+		// performed, and VIRTIO_NET_F_MRG_RXBUF is not
+		// negotiated, so num_buffers is not present.
+		clear(packet[:10])
 	}
-
-	packet := v.rxBuf[:10+n]
-
-	// struct virtio_net_hdr: all zero. No offload is
-	// performed, and VIRTIO_NET_F_MRG_RXBUF is not
-	// negotiated, so num_buffers is not present.
-	clear(packet[:10])
 
 	sel := 0
 
@@ -239,26 +275,21 @@ func (v *Net) Rx() error {
 		return ErrNoRxBuf
 	}
 
-	const NONE = uint16(256)
-	headDescID := NONE
-	prevDescID := NONE
 	uidx := LoadU16(&usedRing.Idx)
 
+	// Each avail entry is the head of a descriptor chain built
+	// by the driver. With GSO features negotiated the driver
+	// posts big receive buffers as chains of MAX_SKB_FRAGS+2
+	// descriptors, so walk the chain via the Next pointers the
+	// driver laid out rather than consuming one avail entry per
+	// descriptor. Consume exactly one avail entry and emit one
+	// used entry per packet.
+	headDescID := availRing.Ring[v.LastAvailIdx[sel]%QueueSize]
+	usedRing.Ring[uidx%QueueSize].Idx = uint32(headDescID)
+	usedRing.Ring[uidx%QueueSize].Len = 0
+
+	descID := headDescID
 	for len(packet) > 0 {
-		descID := availRing.Ring[v.LastAvailIdx[sel]%QueueSize]
-
-		// head of vring chain
-		if headDescID == NONE {
-			headDescID = descID
-
-			// This structure is holding both the
-			// index of the descriptor chain and the
-			// number of bytes that were written to
-			// memory as part of serving the request.
-			usedRing.Ring[uidx%QueueSize].Idx = uint32(headDescID)
-			usedRing.Ring[uidx%QueueSize].Len = 0
-		}
-
 		desc := &v.VirtQueue[sel].DescTable[descID]
 		l := uint32(len(packet))
 
@@ -269,18 +300,23 @@ func (v *Net) Rx() error {
 		copy(v.Mem[desc.Addr:desc.Addr+uint64(l)], packet[:l])
 
 		packet = packet[l:]
-		desc.Len = l
 
 		usedRing.Ring[uidx%QueueSize].Len += l
 
-		if prevDescID != NONE {
-			v.VirtQueue[sel].DescTable[prevDescID].Flags |= 0x1
-			v.VirtQueue[sel].DescTable[prevDescID].Next = descID
+		if len(packet) == 0 {
+			break
 		}
 
-		prevDescID = descID
-		v.LastAvailIdx[sel]++
+		if desc.Flags&0x1 == 0 {
+			// Driver chain ended but packet does not fit:
+			// drop the remainder.
+			break
+		}
+
+		descID = desc.Next
 	}
+
+	v.LastAvailIdx[sel]++
 
 	StoreAddU16(&usedRing.Idx, 1)
 
@@ -364,9 +400,15 @@ func (v *Net) Tx() error {
 			}
 		}
 
-		// Skip struct virtio_net_hdr
-		// refs https://github.com/torvalds/linux/blob/38f80f42/include/uapi/linux/virtio_net.h#L178-L191
-		buf := v.txBuf[10:]
+		// With vnet hdr the tun consumes the 10-byte vnet hdr
+		// (same layout as struct virtio_net_hdr) and performs
+		// the segmentation, so write the whole buffer.
+		// Otherwise skip the hdr; the tun expects raw frames.
+		buf := v.txBuf
+		if !v.vnetHdr {
+			// refs https://github.com/torvalds/linux/blob/38f80f42/include/uapi/linux/virtio_net.h#L178-L191
+			buf = v.txBuf[10:]
+		}
 
 		if _, err := v.tap.Write(buf); err != nil {
 			return err
@@ -459,16 +501,37 @@ func (v *Net) Close() error {
 }
 
 func NewNet(irq uint8, irqInjector IRQInjector, tap io.ReadWriter, mem []byte) *Net {
+	hostFeatures := uint32(virtioRingFEventIdx)
+
+	vnetHdr := false
+	if f, ok := tap.(interface{ VnetHdr() bool }); ok {
+		vnetHdr = f.VnetHdr()
+	}
+
+	// Advertise GSO only when the tun actually does offload AND
+	// carries a vnet hdr (TUNSETOFFLOAD silently succeeds even
+	// without IFF_VNET_HDR, where it would corrupt framing).
+	offload := false
+	if f, ok := tap.(interface{ Offload() bool }); ok {
+		offload = f.Offload() && vnetHdr
+	}
+
+	if offload {
+		hostFeatures |= virtioNetGSO
+	}
+
 	res := &Net{
 		Hdr: netHdr{
 			commonHeader: commonHeader{
-				hostFeatures: virtioRingFEventIdx,
+				hostFeatures: hostFeatures,
 				queueNUM:     QueueSize,
 				isr:          0x0,
 			},
 		},
 		irq:          irq,
 		IRQInjector:  irqInjector,
+		vnetHdr:      vnetHdr,
+		offload:      offload,
 		txKick:       make(chan interface{}, QueueSize),
 		done:         make(chan struct{}),
 		tap:          tap,
