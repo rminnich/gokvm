@@ -19,7 +19,10 @@ func TestNew(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(bytes) != 1388 {
-		t.Fatalf("Invalid size: %v", len(bytes))
+	// Serialized layout: padding(48) + mpfIntel(16) + MP table header(44)
+	// + bus(8) + IOAPIC(8) + 16 I/O interrupt entries(8 each) + nCPUs CPU
+	// entries(20 each).
+	if want := 252 + 4*20; len(bytes) != want {
+		t.Fatalf("Invalid size: %v, want %v", len(bytes), want)
 	}
 }

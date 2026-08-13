@@ -129,13 +129,12 @@ func TestParseBootArgsWithDefaults(t *testing.T) {
 	}
 
 	if c.Params != `console=ttyS0 earlyprintk=serial `+
-		`noapic noacpi notsc nowatchdog `+
-		`nmi_watchdog=0 debug apic=debug show_lapic=all mitigations=off `+
-		`lapic tsc_early_khz=2000 `+
-		`dyndbg="file arch/x86/kernel/smpboot.c +plf ; file drivers/net/virtio_net.c +plf" `+
+		`noapic noacpi pci=conf1 reboot=k panic=1 `+
+		`i8042.direct=1 i8042.dumbkbd=1 i8042.nopnp=1 i8042.noaux=1 `+
+		`mitigations=off `+
 		`pci=realloc=off `+
 		`virtio_pci.force_legacy=1 rdinit=/init init=/init `+
-		`gokvm.ipv4_addr=192.168.20.1/24` {
+		`kunit.enable=0` {
 		t.Error("invalid kernel command-line parameters")
 	}
 
