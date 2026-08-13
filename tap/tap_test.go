@@ -31,7 +31,12 @@ func TestWrite(t *testing.T) { // nolint:paralleltest
 		t.Fatal(err)
 	}
 
-	if _, err := tap.Write(make([]byte, 20)); err != nil {
+	// With IFF_VNET_HDR the tun expects a 10-byte virtio_net_hdr
+	// followed by a full ethernet frame (>= ETH_HLEN 14 bytes);
+	// anything shorter is rejected with EINVAL.
+	frame := make([]byte, 10+14)
+
+	if _, err := tap.Write(frame); err != nil {
 		t.Fatal(err)
 	}
 
