@@ -42,5 +42,6 @@ if [ $? -ne 0 ]; then
     -files "/usr/share/misc/pci.ids" \
     -files "${pwd}/.bashrc:.bashrc" \
     -files "/dev/null:$md5sum" \
+    -defaultsh `which bash` \
     core boot github.com/u-root/u-root/cmds/exp/srvfiles)
 fi
